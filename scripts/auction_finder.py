@@ -54,7 +54,7 @@ SOURCES = (
     Source("Leilosoc", "https://www.leilosoc.com/category/5-imovel/", "auctioneer", "Public property lots."),
     Source("Euro Estates", "https://www.euroestates.pt/realestate/auctions", "auctioneer", "Public active-auctions search."),
     Source("Vantagem Leiloes", "https://www.vantagemleiloes.com/", "auctioneer", "Configured source; DNS currently unavailable."),
-    Source("Caixa Imobiliario", "https://www.caixaimobiliario.pt/", "bank", "Bank property portal."),
+    Source("Caixa Imobiliario", "https://www.caixaimobiliario.pt/pt/comprar?q=Lisboa", "bank", "Public Caixa Imobiliario Lisbon property search."),
 )
 
 class Crawler:
@@ -278,8 +278,54 @@ class Crawler:
             listings.append(Listing("Seguranca Social", text or card_text[:160], card_text, "Lisboa", published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=urljoin(page_url, href), last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else ""))
         return listings
 
+    def caixa_imobiliario(self) -> list[Listing]:
+        source = next(item for item in SOURCES if item.name == "Caixa Imobiliario")
+        results: list[Listing] = []
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                page = browser.new_page(locale="pt-PT")
+                page.goto(source.url, wait_until="networkidle", timeout=60000)
+                accept_cookies = page.get_by_role("button", name="Aceitar")
+                if accept_cookies.count():
+                    accept_cookies.click()
+                seen_urls: set[str] = set()
+                while True:
+                    soup = BeautifulSoup(page.content(), "html.parser")
+                    for listing in self.caixa_parse_results(soup, page.url):
+                        if listing.url not in seen_urls:
+                            seen_urls.add(listing.url)
+                            results.append(listing)
+                    next_button = page.get_by_role("button", name="Próxima página")
+                    if not next_button.count() or next_button.is_disabled():
+                        break
+                    first_url = page.locator('.property-card a[aria-label="Saber mais"]').first.get_attribute("href")
+                    next_button.click()
+                    page.wait_for_function("old => document.querySelector('.property-card a[aria-label=\\\"Saber mais\\\"]')?.getAttribute('href') !== old", arg=first_url, timeout=60000)
+                    page.wait_for_selector('.property-card a[aria-label="Saber mais"]', timeout=60000)
+                browser.close()
+            self.record(source, len(results))
+        except Exception as error:
+            self.record(source, error=f"browser adapter failed: {error}")
+        return results
+
+    def caixa_parse_results(self, soup: BeautifulSoup, page_url: str) -> list[Listing]:
+        listings: list[Listing] = []
+        for card in soup.select(".property-card"):
+            text = card.get_text(" ", strip=True)
+            if "lisboa" not in text.lower():
+                continue
+            link = card.select_one('a[aria-label="Saber mais"][href]')
+            if not link:
+                continue
+            title = next((heading.get_text(" ", strip=True) for heading in card.select("h2, h3, h4")), text[:160])
+            price = re.search(r"([\d.\s]+(?:,\d{1,2})?)\s*€", text)
+            image = card.select_one("img[src], img[data-src]")
+            listings.append(Listing("Caixa Imobiliario", title, text, "Lisboa", published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=urljoin(page_url, link["href"]), last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else ""))
+        return listings
+
     def unavailable_sources(self) -> None:
-        implemented = {"Leilosoc", "Euro Estates", "e-leiloes", "Leiloatrium", "OneFix", "Citius", "Santander Imoveis", "Seguranca Social"}
+        implemented = {"Leilosoc", "Euro Estates", "e-leiloes", "Leiloatrium", "OneFix", "Citius", "Santander Imoveis", "Seguranca Social", "Caixa Imobiliario"}
         for source in SOURCES:
             if source.name not in implemented:
                 try:
@@ -386,7 +432,7 @@ def parse_euro_amount(value: str) -> float | None:
     if not match:
         return None
     try:
-        return float(match.group(1).replace(" ", "").replace(".", "").replace(",", "."))
+        return float(match.group(1).replace(" ", "").replace("\xa0", "").replace(".", "").replace(",", "."))
     except ValueError:
         return None
 
@@ -425,7 +471,7 @@ def main() -> int:
         return 0
     if args.crawl:
         crawler = Crawler()
-        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix() + crawler.citius() + crawler.santander_imoveis() + crawler.seguranca_social())
+        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix() + crawler.citius() + crawler.santander_imoveis() + crawler.seguranca_social() + crawler.caixa_imobiliario())
         crawler.unavailable_sources()
         crawler.browser_probe()
         write_output(listings, crawler.status, args.db, args.format, args.csv_output)
