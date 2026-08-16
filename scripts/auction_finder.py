@@ -376,24 +376,29 @@ class Crawler:
         if not panel:
             return []
         listings: list[Listing] = []
-        for row in panel.select("table tr"):
-            cells = [cell.get_text(" ", strip=True) for cell in row.select("td")]
-            if not cells:
+        for table in panel.select("table"):
+            headers = [cell.get_text(" ", strip=True).lower() for cell in table.select("thead th")]
+            if not headers:
+                headers = [cell.get_text(" ", strip=True).lower() for cell in table.select("tr")[0].select("th")] if table.select("tr") else []
+            location_index = next((index for index, header in enumerate(headers) if re.search(r"localiza|morada|concelho|freguesia|distrito|local do bem", header)), None)
+            if location_index is None:
                 continue
-            row_text = " | ".join(cells)
-            if "lisboa" not in row_text.lower():
-                continue
-            link = row.select_one("a[href]")
-            price = re.search(r"([\d.\s]+,\d{2}\s*€)", row_text)
-            listings.append(Listing(
-                "Citius",
-                cells[0][:200] if cells[0] else row_text[:120],
-                row_text,
-                "Lisboa",
-                published_price_eur=parse_euro_amount(price.group(1)) if price else None,
-                url=urljoin(search_url, link["href"]) if link and link.get("href") else search_url,
-                last_seen=now(),
-            ))
+            for row in table.select("tr"):
+                cells = [cell.get_text(" ", strip=True) for cell in row.select("td")]
+                if not cells or location_index >= len(cells) or "lisboa" not in cells[location_index].lower():
+                    continue
+                row_text = " | ".join(cells)
+                link = row.select_one("a[href]")
+                price = re.search(r"([\d.\s]+(?:,\d{1,2})?\s*€)", row_text)
+                listings.append(Listing(
+                    "Citius",
+                    cells[0][:200] if cells[0] else row_text[:120],
+                    cells[location_index],
+                    "Lisboa",
+                    published_price_eur=parse_euro_amount(price.group(1)) if price else None,
+                    url=urljoin(search_url, link["href"]) if link and link.get("href") else search_url,
+                    last_seen=now(),
+                ))
         return listings
 
     def browser_probe(self) -> None:
