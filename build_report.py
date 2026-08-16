@@ -43,12 +43,6 @@ def image_for(listing: dict, session: requests.Session) -> str:
     return FALLBACK_IMAGE
 
 
-def money(value: object) -> str:
-    if value is None:
-        return "Not published"
-    return f"€{float(value):,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
 def build(db_path: str, output_path: Path) -> None:
     db.init_db(db_path)
     session = requests.Session()

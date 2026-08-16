@@ -2,8 +2,7 @@
 
 This project crawls public Portuguese property-auction sources for the Lisbon
 district. Results are stored in a local SQLite database (`house_finder.db`)
-that categorizes every listing, source, and discovery link, instead of the
-previous per-run JSON snapshots.
+that categorizes every listing, source, and discovery link.
 
 ## Usage
 
@@ -12,12 +11,6 @@ python3 auction_finder.py --inventory
 python3 auction_finder.py --crawl --db house_finder.db
 python3 market_crawler.py --db house_finder.db
 python3 build_report.py --db house_finder.db --output houses.html
-```
-
-One-time only: import any legacy JSON snapshots you still have into the database:
-
-```sh
-python3 migrate_to_db.py --db house_finder.db
 ```
 
 The crawler uses Playwright for browser-level diagnostics. Set it up once with:
