@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 from pathlib import Path
 from urllib.parse import urljoin
@@ -19,6 +20,14 @@ FALLBACK_IMAGE = "https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?a
 def image_for(listing: dict, session: requests.Session) -> str:
     supplied = listing.get("image_url", "")
     if supplied and not supplied.startswith("data:"):
+        if "statics.caixaimobiliario.pt" in supplied:
+            try:
+                response = session.get(supplied, headers={"Referer": listing.get("url", "")}, timeout=20)
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "image/jpeg").split(";", 1)[0]
+                return f"data:{content_type};base64,{base64.b64encode(response.content).decode('ascii')}"
+            except requests.RequestException:
+                return FALLBACK_IMAGE
         return supplied
     url = listing.get("url", "")
     try:
@@ -55,7 +64,7 @@ def build(db_path: str, output_path: Path) -> None:
         discovery = db.fetch_discovery_links(conn)
 
         for listing in auction_listings + market_listings:
-            if not listing.get("image"):
+            if not listing.get("image") or "statics.caixaimobiliario.pt" in listing.get("image_url", ""):
                 image = image_for(listing, session)
                 db.set_listing_image(conn, listing["url"], image)
                 listing["image"] = image
