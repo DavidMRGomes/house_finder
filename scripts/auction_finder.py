@@ -210,8 +210,76 @@ class Crawler:
             self.record(source, error=str(error))
         return results
 
+    def santander_imoveis(self) -> list[Listing]:
+        source = next(item for item in SOURCES if item.name == "Santander Imoveis")
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36", locale="pt-PT")
+                page.goto(source.url, wait_until="networkidle", timeout=60000)
+                page.get_by_role("button", name="Pesquisar").click()
+                page.wait_for_load_state("networkidle", timeout=60000)
+                results = self.santander_parse_results(BeautifulSoup(page.content(), "html.parser"), page.url)
+                browser.close()
+            self.record(source, len(results), "Lisbon filter unavailable on source; retained returned records mentioning Lisboa" if not results else "")
+            return results
+        except Exception as error:
+            self.record(source, error=f"browser adapter failed: {error}")
+            return []
+
+    def santander_parse_results(self, soup: BeautifulSoup, page_url: str) -> list[Listing]:
+        listings: list[Listing] = []
+        for link in soup.select('a[href*="/imoveis/"]'):
+            href = link.get("href", "")
+            text = link.get_text(" ", strip=True)
+            card = link.find_parent(class_=re.compile(r"card|property|imovel", re.I)) or link.parent
+            card_text = card.get_text(" ", strip=True)
+            combined = " ".join(part for part in (text, card_text) if part)
+            if "lisboa" not in combined.lower():
+                continue
+            price = re.search(r"([\d.\s]+(?:,\d{1,2})?)\s*€", combined)
+            image = card.select_one("img[src], img[data-src]") if card else None
+            listings.append(Listing("Santander Imoveis", text or card_text[:160], card_text, "Lisboa", published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=urljoin(page_url, href), last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else ""))
+        return listings
+
+    def seguranca_social(self) -> list[Listing]:
+        source = next(item for item in SOURCES if item.name == "Seguranca Social")
+        try:
+            soup = BeautifulSoup(self.get(source.url).text, "html.parser")
+            form = soup.select_one('form[action*="default.aspx"]')
+            if not form:
+                raise ValueError("public property search form not found")
+            action = urljoin(source.url, form.get("action", ""))
+            payload = {field.get("name"): field.get("value", "") for field in form.select('input[type="hidden"][name]')}
+            payload.update({"cboTipoImovelPesquisa": "", "cboTipoNegocioPesquisa": "1", "cboDistritoPesquisa": "14"})
+            response = self.session.post(action, data=payload, timeout=30)
+            response.raise_for_status()
+            results = self.seguranca_social_parse_results(BeautifulSoup(response.text, "html.parser"), response.url)
+            self.record(source, len(results), "Lisbon property search returned no records" if not results else "")
+            return results
+        except (requests.RequestException, ValueError) as error:
+            self.record(source, error=str(error))
+            return []
+
+    def seguranca_social_parse_results(self, soup: BeautifulSoup, page_url: str) -> list[Listing]:
+        listings: list[Listing] = []
+        for link in soup.select('a[href]'):
+            href = link.get("href", "")
+            text = link.get_text(" ", strip=True)
+            if not href or not any(term in href.lower() for term in ("imovel", "ficha", "detalhe")):
+                continue
+            card = link.find_parent(class_=re.compile(r"card|imovel|property|item", re.I)) or link.parent
+            card_text = card.get_text(" ", strip=True)
+            combined = " ".join(part for part in (text, card_text) if part)
+            if "lisboa" not in combined.lower():
+                continue
+            price = re.search(r"([\d.\s]+(?:,\d{1,2})?)\s*€", combined)
+            image = card.select_one("img[src], img[data-src]") if card else None
+            listings.append(Listing("Seguranca Social", text or card_text[:160], card_text, "Lisboa", published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=urljoin(page_url, href), last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else ""))
+        return listings
+
     def unavailable_sources(self) -> None:
-        implemented = {"Leilosoc", "Euro Estates", "e-leiloes", "Leiloatrium", "OneFix", "Citius"}
+        implemented = {"Leilosoc", "Euro Estates", "e-leiloes", "Leiloatrium", "OneFix", "Citius", "Santander Imoveis", "Seguranca Social"}
         for source in SOURCES:
             if source.name not in implemented:
                 try:
@@ -357,7 +425,7 @@ def main() -> int:
         return 0
     if args.crawl:
         crawler = Crawler()
-        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix() + crawler.citius())
+        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix() + crawler.citius() + crawler.santander_imoveis() + crawler.seguranca_social())
         crawler.unavailable_sources()
         crawler.browser_probe()
         write_output(listings, crawler.status, args.db, args.format, args.csv_output)
