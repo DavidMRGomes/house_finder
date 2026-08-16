@@ -1,0 +1,17 @@
+[
+  {"name":"Idealista","url":"https://www.idealista.pt/comprar-casas/lisboa/","status":"blocked","notes":"Public listing route returned HTTP 403 during crawl."},
+  {"name":"Imovirtual","url":"https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa","status":"blocked","notes":"Public route returned an infrastructure HTTP 403."},
+  {"name":"SuperCasa","url":"https://supercasa.pt/comprar-casas/lisboa","status":"blocked","notes":"Public route presented bot verification."},
+  {"name":"SAPO Imóveis","url":"https://casa.sapo.pt/comprar/","status":"reference","notes":"Current public property search entry point."},
+  {"name":"RE/MAX Portugal","url":"https://www.remax.pt/comprar","status":"available","notes":"Public property search is reachable; results require source-specific filters."},
+  {"name":"ERA Portugal","url":"https://www.era.pt/comprar","status":"available","notes":"Public property search is reachable."},
+  {"name":"Century 21 Portugal","url":"https://www.century21.pt/comprar","status":"available","notes":"Public property search is reachable."},
+  {"name":"Zome","url":"https://www.zome.pt/pt","status":"reference","notes":"The supplied /comprar path no longer exists; current homepage is the reference route."},
+  {"name":"iad Portugal","url":"https://www.iadportugal.pt/","status":"reference","notes":"The supplied /comprar path no longer exists; current homepage is the reference route."},
+  {"name":"Green Acres","url":"https://www.green-acres.pt/","status":"reference","notes":"The supplied Lisbon path returned 404; current homepage is the reference route."},
+  {"name":"Pure Portugal","url":"https://www.pureportugal.co.uk/","status":"available","notes":"Public property search is reachable."},
+  {"name":"HomeLovers","url":"https://www.homelovers.com/","status":"available","notes":"Public Lisbon-focused agency site is reachable."},
+  {"name":"Properstar","url":"https://www.properstar.pt/","status":"blocked","notes":"Public route returned HTTP 429."},
+  {"name":"OLX Imóveis","url":"https://www.olx.pt/imoveis/","status":"available","notes":"Public property marketplace is reachable."},
+  {"name":"CustoJusto Imobiliário","url":"https://www.custojusto.pt/portugal/imobiliario","status":"available","notes":"Public property marketplace is reachable."}
+]
