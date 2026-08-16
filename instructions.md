@@ -1,3 +1,0 @@
-In Portugal people that do not pay their mortgage get their houses confiscated, these houses are then for auction in several websites, depending on the entity that confiscated it is a different website with different layouts and different filters. I want to make a web crawler that goes to all these websites and finds the houses that are being sold in the region of Lisbon. Firs I need you to identify all the websites where these auctions happen and then scrap them for houses in lisbon showing me what is the current nd minimum auction bid. 
-
-Before starting to implement anything make a plan that I can review.

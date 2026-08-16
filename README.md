@@ -7,10 +7,10 @@ that categorizes every listing, source, and discovery link.
 ## Usage
 
 ```sh
-python3 auction_finder.py --inventory
-python3 auction_finder.py --crawl --db house_finder.db
-python3 market_crawler.py --db house_finder.db
-python3 build_report.py --db house_finder.db --output houses.html
+python3 scripts/auction_finder.py --inventory
+python3 scripts/auction_finder.py --crawl --db house_finder.db
+python3 scripts/market_crawler.py --db house_finder.db
+python3 scripts/build_report.py --db house_finder.db --output houses.html
 ```
 
 The crawler uses Playwright for browser-level diagnostics. Set it up once with:
@@ -39,7 +39,7 @@ authenticated area.
 
 ## Database
 
-`db.py` defines the SQLite schema and read/write helpers used by every script:
+`scripts/db.py` defines the SQLite schema and read/write helpers used by every script:
 
 - `listings` — one row per auction or market listing, keyed by URL, tagged
   with `listing_type` (`auction` or `market`), category fields (source,
@@ -55,7 +55,7 @@ the latest crawl without growing unbounded.
 Open `houses.html` in a browser for the visual report. It includes
 search, source filtering, municipality filtering, price range filters, a
 "bid published" filter, price sorting, listing links, source-page images,
-and a source coverage ledger. Re-run `build_report.py` after crawling to
+and a source coverage ledger. Re-run `scripts/build_report.py` after crawling to
 refresh it from the database.
 
 The **Market homes** tab is populated by `market_crawler.py`. Its first public

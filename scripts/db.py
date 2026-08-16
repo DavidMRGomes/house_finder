@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-DEFAULT_DB_PATH = Path(__file__).parent / "house_finder.db"
+DEFAULT_DB_PATH = Path(__file__).parent.parent / "house_finder.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
