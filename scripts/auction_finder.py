@@ -47,13 +47,12 @@ SOURCES = (
     Source("e-leiloes", "https://www.e-leiloes.pt/", "judicial", "Official electronic judicial auctions; public API adapter."),
     Source("Leiloatrium", "https://leiloatrium.pt/", "auctioneer", "Public judicial-sales auctioneer."),
     Source("OneFix", "https://www.onefix-leiloeiros.pt/tipo_verbas/1/Imoveis", "auctioneer", "Public property auction lots."),
-    Source("Santander Imoveis", "https://imoveis.santander.pt/", "bank", "Public bank property portal; not all listings are auctions."),
-    Source("Seguranca Social", "https://www.seg-social.pt/ptss/pssd/home?r=%2Fvenda%2F", "government", "Sales area redirects to authenticated Social Security portal."),
+    Source("Santander Imoveis", "https://imoveis.santander.pt", "bank", "Public bank property portal; not all listings are auctions."),
+    Source("Seguranca Social", "https://www.seg-social-patrimonio.pt/comprar/imoveis/?tipo=1", "government", "Public Social Security property sales portal."),
     Source("Portal das Financas", "https://vendas.portaldasfinancas.gov.pt/", "tax", "Tax authority sales portal; public endpoint currently returns 404."),
-    Source("Citius", "https://www.citius.mj.pt/portal/default.aspx", "judicial", "Portal entry point linking to the public judicial-sales search form."),
+    Source("Citius", "https://www.citius.mj.pt/portal/consultas/consultasvenda.aspx", "judicial", "Public judicial-sales search form; queried per court since it requires a court to be selected."),
     Source("Leilosoc", "https://www.leilosoc.com/category/5-imovel/", "auctioneer", "Public property lots."),
     Source("Euro Estates", "https://www.euroestates.pt/realestate/auctions", "auctioneer", "Public active-auctions search."),
-    Source("Oportunity Leiloes", "https://www.oportunityleiloes.pt/", "auctioneer", "Configured source; DNS currently unavailable."),
     Source("Vantagem Leiloes", "https://www.vantagemleiloes.com/", "auctioneer", "Configured source; DNS currently unavailable."),
     Source("Caixa Imobiliario", "https://www.caixaimobiliario.pt/", "bank", "Bank property portal."),
 )
@@ -212,7 +211,7 @@ class Crawler:
         return results
 
     def unavailable_sources(self) -> None:
-        implemented = {"Leilosoc", "Euro Estates", "e-leiloes", "Leiloatrium", "OneFix"}
+        implemented = {"Leilosoc", "Euro Estates", "e-leiloes", "Leiloatrium", "OneFix", "Citius"}
         for source in SOURCES:
             if source.name not in implemented:
                 try:
@@ -221,11 +220,72 @@ class Crawler:
                 except requests.RequestException as error:
                     self.record(source, error=str(error))
 
+    def citius(self) -> list[Listing]:
+        """Query every court in the public judicial-sales search form; the site requires one court per search and has no date filter applied."""
+        source = next(item for item in SOURCES if item.name == "Citius")
+        search_url = source.url
+        results: list[Listing] = []
+        courts_checked = 0
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                # A generic Playwright UA is blocked by the portal's bot filter; a desktop Chrome UA is required.
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    locale="pt-PT",
+                )
+                page = context.new_page()
+                page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_selector("#ctl00_ContentPlaceHolder1_ddlTribunais", timeout=30000)
+                courts = [value for value in page.locator("#ctl00_ContentPlaceHolder1_ddlTribunais option").evaluate_all("options => options.map(o => o.value)") if value and value != "0"]
+                for value in courts:
+                    courts_checked += 1
+                    try:
+                        page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+                        page.wait_for_selector("#ctl00_ContentPlaceHolder1_ddlTribunais", timeout=30000)
+                        page.select_option("#ctl00_ContentPlaceHolder1_ddlTribunais", value)
+                        page.select_option("#ctl00_ContentPlaceHolder1_ddlTiposBem", "1")  # Imovel only
+                        page.click("#ctl00_ContentPlaceHolder1_btnSearch")
+                        page.wait_for_load_state("networkidle", timeout=60000)
+                        soup = BeautifulSoup(page.content(), "html.parser")
+                        results.extend(self.citius_parse_results(soup, search_url))
+                    except Exception as error:
+                        print(f"warning: Citius court {value}: {error}", file=sys.stderr)
+                browser.close()
+            self.record(source, len(results), f"checked {courts_checked} courts nationwide (dates ignored); kept only Lisboa property matches")
+        except Exception as error:
+            self.record(source, error=f"browser adapter failed: {error}")
+        return results
+
+    def citius_parse_results(self, soup: BeautifulSoup, search_url: str) -> list[Listing]:
+        panel = soup.select_one("#divresultadopubvenda") or soup.select_one("#ctl00_ContentPlaceHolder1_pnlResults")
+        if not panel:
+            return []
+        listings: list[Listing] = []
+        for row in panel.select("table tr"):
+            cells = [cell.get_text(" ", strip=True) for cell in row.select("td")]
+            if not cells:
+                continue
+            row_text = " | ".join(cells)
+            if "lisboa" not in row_text.lower():
+                continue
+            link = row.select_one("a[href]")
+            price = re.search(r"([\d.\s]+,\d{2}\s*€)", row_text)
+            listings.append(Listing(
+                "Citius",
+                cells[0][:200] if cells[0] else row_text[:120],
+                row_text,
+                "Lisboa",
+                published_price_eur=parse_euro_amount(price.group(1)) if price else None,
+                url=urljoin(search_url, link["href"]) if link and link.get("href") else search_url,
+                last_seen=now(),
+            ))
+        return listings
+
     def browser_probe(self) -> None:
         """Recheck blocked sources with JavaScript and a browser session."""
         targets = {
             "e-leiloes": "https://www.e-leiloes.pt/index.aspx",
-            "Citius": "https://www.citius.mj.pt/portal/default.aspx",
             "Portal das Financas": "https://vendas.portaldasfinancas.gov.pt/",
         }
         known = {item["source"] for item in self.status}
@@ -297,7 +357,7 @@ def main() -> int:
         return 0
     if args.crawl:
         crawler = Crawler()
-        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix())
+        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix() + crawler.citius())
         crawler.unavailable_sources()
         crawler.browser_probe()
         write_output(listings, crawler.status, args.db, args.format, args.csv_output)
