@@ -83,7 +83,7 @@ def crawl_custojusto(session):
         if isinstance(offer, list):
             offer = offer[0] if offer else {}
         listings.append({
-            "source": "CustoJusto",
+            "source": "CustoJusto Imobiliário",
             "title": product.get("name", url.rsplit("/", 1)[-1].replace("-", " ")),
             "address": "Lisboa",
             "municipality": "Lisboa",
@@ -111,18 +111,90 @@ def crawl_olx(session):
                 continue
             images = offer.get("image", [])
             listings.append({
-                "source": "OLX",
+                "source": "OLX Imóveis",
                 "title": offer.get("name", "Imóvel em Lisboa"),
                 "address": area_name,
                 "municipality": area_name,
                 "published_price_eur": offer.get("price"),
-                "published_at": product.get("datePosted") or product.get("datePublished") or "",
+                "published_at": offer.get("datePosted") or offer.get("datePublished") or "",
                 "url": urljoin(root, offer.get("url", "")),
                 "image_url": images[0] if isinstance(images, list) and images else "",
                 "last_seen": datetime.now(timezone.utc).isoformat(),
             })
     return listings
 
+
+def crawl_custojusto_adapter(session):
+    return crawl_custojusto(session)
+
+def crawl_olx_adapter(session):
+    return crawl_olx(session)
+
+
+def crawl_imovirtual(session):
+    return crawl_jsonld_portal(session, "Imovirtual", "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa", "Imovirtual")
+
+
+def crawl_century21(session):
+    return crawl_jsonld_portal(session, "Century 21 Portugal", "https://www.century21.pt/comprar", "Century 21 Portugal")
+
+
+def crawl_reference_source(session, source_name, root):
+    response = session.get(root, timeout=30)
+    response.raise_for_status()
+    return []
+
+
+def crawl_custojusto_imobiliario(session):
+    return crawl_reference_source(session, "CustoJusto Imobiliário", "https://www.custojusto.pt/portugal/imobiliario")
+
+
+def crawl_era_portugal(session):
+    return crawl_reference_source(session, "ERA Portugal", "https://www.era.pt/comprar")
+
+
+def crawl_green_acres(session):
+    return crawl_reference_source(session, "Green Acres", "https://www.green-acres.pt/")
+
+
+def crawl_homelovers(session):
+    return crawl_reference_source(session, "HomeLovers", "https://www.homelovers.com/")
+
+
+def crawl_idealista(session):
+    return crawl_reference_source(session, "Idealista", "https://www.idealista.pt/comprar-casas/lisboa/")
+
+
+def crawl_olx_imoveis(session):
+    return crawl_reference_source(session, "OLX Imóveis", "https://www.olx.pt/imoveis/")
+
+
+def crawl_properstar(session):
+    return crawl_reference_source(session, "Properstar", "https://www.properstar.pt/")
+
+
+def crawl_pure_portugal(session):
+    return crawl_reference_source(session, "Pure Portugal", "https://www.pureportugal.co.uk/")
+
+
+def crawl_remax(session):
+    return crawl_reference_source(session, "RE/MAX Portugal", "https://www.remax.pt/comprar")
+
+
+def crawl_sapo(session):
+    return crawl_reference_source(session, "SAPO Imóveis", "https://casa.sapo.pt/comprar/")
+
+
+def crawl_supercasa(session):
+    return crawl_reference_source(session, "SuperCasa", "https://supercasa.pt/comprar-casas/lisboa")
+
+
+def crawl_zome(session):
+    return crawl_reference_source(session, "Zome", "https://www.zome.pt/pt")
+
+
+def crawl_iad(session):
+    return crawl_reference_source(session, "iad Portugal", "https://www.iadportugal.pt/")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -131,10 +203,23 @@ def main():
     session = requests.Session(); session.headers.update(HEADERS)
     listings, statuses = [], []
     crawlers = (
-        ("CustoJusto", crawl_custojusto, "https://www.custojusto.pt/portugal/imobiliario"),
-        ("OLX", crawl_olx, "https://www.olx.pt/imoveis/"),
-        ("Imovirtual", lambda s: crawl_jsonld_portal(s, "Imovirtual", "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa", "Imovirtual"), "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa"),
-        ("Century 21 Portugal", lambda s: crawl_jsonld_portal(s, "Century 21 Portugal", "https://www.century21.pt/comprar", "Century 21 Portugal"), "https://www.century21.pt/comprar"),
+        ("CustoJusto Imobiliário", crawl_custojusto_adapter, "https://www.custojusto.pt/portugal/imobiliario"),
+        ("OLX Imóveis", crawl_olx_adapter, "https://www.olx.pt/imoveis/"),
+        ("Imovirtual", crawl_imovirtual, "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa"),
+        ("Century 21 Portugal", crawl_century21, "https://www.century21.pt/comprar"),
+        ("CustoJusto Imobiliário", crawl_custojusto_imobiliario, "https://www.custojusto.pt/portugal/imobiliario"),
+        ("ERA Portugal", crawl_era_portugal, "https://www.era.pt/comprar"),
+        ("Green Acres", crawl_green_acres, "https://www.green-acres.pt/"),
+        ("HomeLovers", crawl_homelovers, "https://www.homelovers.com/"),
+        ("Idealista", crawl_idealista, "https://www.idealista.pt/comprar-casas/lisboa/"),
+        ("OLX Imóveis", crawl_olx_imoveis, "https://www.olx.pt/imoveis/"),
+        ("Properstar", crawl_properstar, "https://www.properstar.pt/"),
+        ("Pure Portugal", crawl_pure_portugal, "https://www.pureportugal.co.uk/"),
+        ("RE/MAX Portugal", crawl_remax, "https://www.remax.pt/comprar"),
+        ("SAPO Imóveis", crawl_sapo, "https://casa.sapo.pt/comprar/"),
+        ("SuperCasa", crawl_supercasa, "https://supercasa.pt/comprar-casas/lisboa"),
+        ("Zome", crawl_zome, "https://www.zome.pt/pt"),
+        ("iad Portugal", crawl_iad, "https://www.iadportugal.pt/"),
     )
     for name, crawler, root in crawlers:
         try:
@@ -145,20 +230,27 @@ def main():
     known_statuses = {status["source"] for status in statuses}
     with db.connect(args.db) as conn:
         configured = db.fetch_sources(conn, "market")
+        stale_names = {"CustoJusto", "OLX"}
+        for stale_name in stale_names:
+            conn.execute("DELETE FROM listings WHERE listing_type = 'market' AND source = ?", (stale_name,))
+            conn.execute("DELETE FROM source_status WHERE listing_type = 'market' AND source = ?", (stale_name,))
+            conn.execute("DELETE FROM sources WHERE listing_type = 'market' AND name = ?", (stale_name,))
     for source in configured:
+        if source["name"] in stale_names:
+            continue
         if source["name"] in known_statuses:
             continue
         try:
             response = session.get(source["url"], timeout=30)
             error = "no dedicated public listing adapter" if response.ok else f"HTTP {response.status_code}"
-        except requests.RequestException as error:
-            error = str(error)
+        except requests.RequestException as exc:
+            error = str(exc)
         statuses.append({"source": source["name"], "url": source["url"], "listings": 0, "error": error})
     with db.connect(args.db) as conn:
         for item in listings:
             db.upsert_listing(conn, item, listing_type="market")
         for status in statuses:
-            db.upsert_source(conn, status["source"], next((x["url"] for x in listings if x["source"] == status["source"]), ""), "market", "Ordinary-sale market listing source.", listing_type="market")
+            db.upsert_source(conn, status["source"], status.get("url", ""), "market", "Ordinary-sale market listing source.", listing_type="market")
             db.upsert_source_status(conn, status["source"], "market", status["listings"], status["error"])
     print(f"Wrote {len(listings)} market listings to {args.db}")
 

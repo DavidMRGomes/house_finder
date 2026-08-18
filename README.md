@@ -17,6 +17,8 @@ python3 scripts/build_report.py --db house_finder.db --output houses.html
 Market homes are ordered newest first when a source publishes `datePosted` or
 `datePublished`; sources without a publication date fall back to crawl time.
 The Market homes tab supports maximum price, Concelho, and Freguesia filters.
+Each configured market portal has a named adapter. The report footer separates
+sources crawled successfully from sources that were blocked, empty, or failed.
 
 The `--tax` command opens a dedicated visible browser profile for Portal das
 Finanças. Log in directly in that browser, including any MFA step, then press
