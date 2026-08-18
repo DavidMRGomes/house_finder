@@ -79,8 +79,4 @@ search, source filtering, municipality filtering, price range filters, a
 and a source coverage ledger. Re-run `scripts/build_report.py` after crawling to
 refresh it from the database.
 
-The **Market homes** tab is populated by `market_crawler.py`. It checks every
-configured market source, extracts verifiable public records from CustoJusto,
-OLX, Imovirtual, and Century 21 when their markup exposes them, and records a
-status for the remaining portals. Market records are ordered by publication
-date when provided by the source, otherwise by crawl time.
+The **Market homes** tab is populated by `market_crawler.py`. It checks every configured market source with a named adapter. It extracts verifiable public records from CustoJusto and Century 21, attempts source-specific routes for RE/MAX, iad, Zome, Pure Portugal, HomeLovers, Imovirtual, and the other configured portals, and records a status for every source. Market records are ordered by publication date when provided by the source, otherwise by crawl time.

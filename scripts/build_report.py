@@ -135,7 +135,7 @@ const marketMunicipalitySelect=document.getElementById('marketMunicipality');[..
 const locationParts=x=>String(x.address||'').split(',').map(part=>part.trim()).filter(Boolean);
 const concelhoOf=x=>x.municipality||((locationParts(x).length>=2)?locationParts(x).at(-2):'');
 const freguesiaOf=x=>{let parts=locationParts(x);return parts.length>=3&&parts.at(-1).toLowerCase()==='lisboa'?parts.at(-3):''};
-const typologyOf=x=>{let match=String(x.title||'').match(/\bT[0-6]\b/i);return match?match[0].toUpperCase():''};
+const typologyOf=x=>x.typology||((String(x.title||'').match(/\bT[0-6]\b/i)||[])[0]||'').toUpperCase();
 const freguesiaSelect=document.getElementById('freguesia');[...new Set(listings.map(freguesiaOf).filter(Boolean))].sort().forEach(f=>freguesiaSelect.insertAdjacentHTML('beforeend',`<option value="${esc(f)}">${esc(f)}</option>`));
 const marketFreguesiaSelect=document.getElementById('marketFreguesia');[...new Set(marketListings.map(freguesiaOf).filter(Boolean))].sort().forEach(f=>marketFreguesiaSelect.insertAdjacentHTML('beforeend',`<option value="${esc(f)}">${esc(f)}</option>`));
 const typologySelect=document.getElementById('typology');[...new Set(listings.map(typologyOf).filter(Boolean))].sort().forEach(t=>typologySelect.insertAdjacentHTML('beforeend',`<option value="${esc(t)}">${esc(t)}</option>`));

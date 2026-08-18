@@ -144,6 +144,94 @@ def crawl_century21(session):
     return crawl_jsonld_portal(session, "Century 21 Portugal", "https://www.century21.pt/comprar", "Century 21 Portugal")
 
 
+def crawl_century21_api(session):
+    root = "https://www.century21.pt/api/properties?address_names=Lisboa&addresses=1106&page=1&ad_type=sell&order_by=entered_market_desc"
+    data = session.get(root, timeout=30).json()
+    records = data.get("properties", data.get("data", [])) if isinstance(data, dict) else data
+    results = []
+    for record in records or []:
+        address = record.get("address", "")
+        address = address if isinstance(address, str) else ", ".join(str(x) for x in address.values())
+        if "lisboa" not in address.casefold():
+            continue
+        rooms = record.get("number_of_rooms")
+        title = record.get("title", {})
+        title = title.get("pt", "") if isinstance(title, dict) else str(title)
+        results.append({"source":"Century 21 Portugal","title":title or "Imóvel em Lisboa","address":address,"municipality":"Lisboa","published_price_eur":record.get("price"),"published_at":record.get("entered_market_at", ""),"url":urljoin("https://www.century21.pt", record.get("link", "")),"image_url":(record.get("images") or [""])[0],"last_seen":datetime.now(timezone.utc).isoformat(),"typology":f"T{rooms}" if rooms is not None else ""})
+    return results
+
+
+def crawl_remax(session):
+    root = "https://www.remax.pt/_next/data/9NhcqVV_5tn3842MeY0T2/pt/comprar.json?locale=pt"
+    payload = session.get(root, timeout=30).json()
+    records = payload.get("pageProps", {}).get("properties", payload.get("properties", []))
+    results = []
+    for record in records or []:
+        address = record.get("address", "")
+        if isinstance(address, dict): address = ", ".join(str(x) for x in address.values())
+        if "lisboa" not in str(address).casefold(): continue
+        rooms = record.get("number_of_rooms")
+        results.append({"source":"RE/MAX Portugal","title":record.get("title", "Imóvel em Lisboa"),"address":str(address),"municipality":"Lisboa","published_price_eur":record.get("price"),"published_at":"","url":urljoin("https://www.remax.pt", record.get("link", "")),"image_url":(record.get("images") or [""])[0],"last_seen":datetime.now(timezone.utc).isoformat(),"typology":f"T{rooms}" if rooms is not None else ""})
+    return results
+
+
+def crawl_iad(session):
+    root = "https://www.iadportugal.pt/anuncios/venda/apartamento"
+    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    results = []
+    for link in soup.select('a[href^="/anuncios/"]'):
+        href = link.get("href", "")
+        text = link.get_text(" ", strip=True)
+        if href.rstrip("/") == "/anuncios/venda/apartamento" or not text: continue
+        if "lisboa" not in (text + href).casefold(): continue
+        results.append({"source":"iad Portugal","title":text,"address":"Lisboa","municipality":"Lisboa","published_price_eur":None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat()})
+    return list({x["url"]:x for x in results}.values())
+
+
+def crawl_zome(session):
+    root = "https://www.zome.pt/pt"
+    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    results = []
+    for link in soup.select('a[href*="ZMPT"]'):
+        href = link.get("href", "")
+        text = link.get_text(" ", strip=True)
+        if "lisboa" not in (text + href).casefold(): continue
+        match = re.search(r"\bT[0-9]+\b", text, re.I)
+        results.append({"source":"Zome","title":text[:200],"address":text,"municipality":"Lisboa","published_price_eur":None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat(),"typology":match.group(0).upper() if match else ""})
+    return list({x["url"]:x for x in results}.values())
+
+
+def crawl_pure_portugal(session):
+    root = "https://pureportugal.co.uk/"
+    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    results = []
+    for link in soup.select('a[href*="/property/"]'):
+        href = link.get("href", "")
+        text = link.get_text(" ", strip=True)
+        if "lisboa" not in (text + href).casefold(): continue
+        price = re.search(r"([\d.\s]+)\s*(?:€|EUR)", text)
+        results.append({"source":"Pure Portugal","title":text[:200],"address":"Lisboa","municipality":"Lisboa","published_price_eur":parse_price(price.group(1)) if price else None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat()})
+    return list({x["url"]:x for x in results}.values())
+
+
+def crawl_homelovers(session):
+    root = "https://homelovers.com/buyproperties?FilterDistrictId=2&filtroHome=true"
+    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    results = []
+    for link in soup.select('a[href*="/property"], a[href*="/imovel"], a[href*="a155"]'):
+        href = link.get("href", "")
+        text = link.parent.get_text(" ", strip=True)
+        if "lisboa" not in text.casefold(): continue
+        price = re.search(r"([\d.]+)\s*EUR", text)
+        match = re.search(r"\bT[0-9]+\b|\b([0-9]+)\s+quartos", text, re.I)
+        results.append({"source":"HomeLovers","title":link.get_text(" ",strip=True) or text[:160],"address":text,"municipality":"Lisboa","published_price_eur":parse_price(price.group(1)) if price else None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat(),"typology":match.group(0).upper() if match and match.group(0).upper().startswith("T") else ""})
+    return list({x["url"]:x for x in results}.values())
+
+
+def parse_price(value):
+    return float(value.replace(".", "").replace(" ", "").replace(",", "."))
+
+
 def crawl_reference_source(session, source_name, root):
     response = session.get(root, timeout=30)
     response.raise_for_status()
@@ -212,20 +300,18 @@ def main():
         ("CustoJusto Imobiliário", crawl_custojusto_adapter, "https://www.custojusto.pt/portugal/imobiliario"),
         ("OLX Imóveis", crawl_olx_adapter, "https://www.olx.pt/imoveis/"),
         ("Imovirtual", crawl_imovirtual, "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa"),
-        ("Century 21 Portugal", crawl_century21, "https://www.century21.pt/comprar"),
-        ("CustoJusto Imobiliário", crawl_custojusto_imobiliario, "https://www.custojusto.pt/portugal/imobiliario"),
+        ("Century 21 Portugal", crawl_century21_api, "https://www.century21.pt/comprar"),
         ("ERA Portugal", crawl_era_portugal, "https://www.era.pt/comprar"),
         ("Green Acres", crawl_green_acres, "https://www.green-acres.pt/"),
-        ("HomeLovers", crawl_homelovers, "https://www.homelovers.com/"),
+        ("HomeLovers", crawl_homelovers, "https://homelovers.com/buyproperties?FilterDistrictId=2&filtroHome=true"),
         ("Idealista", crawl_idealista, "https://www.idealista.pt/comprar-casas/lisboa/"),
-        ("OLX Imóveis", crawl_olx_imoveis, "https://www.olx.pt/imoveis/"),
         ("Properstar", crawl_properstar, "https://www.properstar.pt/"),
         ("Pure Portugal", crawl_pure_portugal, "https://www.pureportugal.co.uk/"),
         ("RE/MAX Portugal", crawl_remax, "https://www.remax.pt/comprar"),
         ("SAPO Imóveis", crawl_sapo, "https://casa.sapo.pt/comprar/"),
         ("SuperCasa", crawl_supercasa, "https://supercasa.pt/comprar-casas/lisboa"),
         ("Zome", crawl_zome, "https://www.zome.pt/pt"),
-        ("iad Portugal", crawl_iad, "https://www.iadportugal.pt/"),
+        ("iad Portugal", crawl_iad, "https://www.iadportugal.pt/anuncios/venda/apartamento"),
     )
     for name, crawler, root in crawlers:
         try:

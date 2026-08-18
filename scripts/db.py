@@ -84,7 +84,7 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(listings)")}
         if "published_at" not in columns:
             conn.execute("ALTER TABLE listings ADD COLUMN published_at TEXT")
-        for column, definition in (("first_seen", "TEXT"), ("is_active", "INTEGER DEFAULT 1"), ("removed_at", "TEXT")):
+        for column, definition in (("first_seen", "TEXT"), ("is_active", "INTEGER DEFAULT 1"), ("removed_at", "TEXT"), ("typology", "TEXT")):
             if column not in columns:
                 conn.execute(f"ALTER TABLE listings ADD COLUMN {column} {definition}")
 
@@ -111,15 +111,15 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict, listing_type: str) -
         return
     conn.execute(
         "INSERT INTO listings (url, listing_type, source, title, address, municipality, current_bid_eur, "
-        "minimum_bid_eur, published_price_eur, auction_date, image_url, last_seen, published_at) "
+        "minimum_bid_eur, published_price_eur, auction_date, image_url, last_seen, published_at, typology) "
         "VALUES (:url, :listing_type, :source, :title, :address, :municipality, :current_bid_eur, "
-        ":minimum_bid_eur, :published_price_eur, :auction_date, :image_url, :last_seen, :published_at) "
+        ":minimum_bid_eur, :published_price_eur, :auction_date, :image_url, :last_seen, :published_at, :typology) "
         "ON CONFLICT(url) DO UPDATE SET listing_type=excluded.listing_type, source=excluded.source, "
         "title=excluded.title, address=excluded.address, municipality=excluded.municipality, "
         "current_bid_eur=excluded.current_bid_eur, minimum_bid_eur=excluded.minimum_bid_eur, "
         "published_price_eur=excluded.published_price_eur, auction_date=excluded.auction_date, "
         "image_url=excluded.image_url, last_seen=excluded.last_seen, published_at=COALESCE(excluded.published_at, listings.published_at), "
-        "first_seen=COALESCE(listings.first_seen, excluded.last_seen), is_active=1, removed_at=NULL",
+        "first_seen=COALESCE(listings.first_seen, excluded.last_seen), is_active=1, removed_at=NULL, typology=COALESCE(excluded.typology, listings.typology)",
         {
             "url": listing.get("url", ""),
             "listing_type": listing_type,
@@ -134,6 +134,7 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict, listing_type: str) -
             "image_url": listing.get("image_url", ""),
             "last_seen": listing.get("last_seen", now()),
             "published_at": listing.get("published_at", ""),
+            "typology": listing.get("typology", ""),
         },
     )
 
