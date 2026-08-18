@@ -216,15 +216,19 @@ def crawl_pure_portugal(session):
 
 def crawl_homelovers(session):
     root = "https://homelovers.com/buyproperties?FilterDistrictId=2&filtroHome=true"
-    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    response = session.get(root, timeout=30)
+    response.encoding = response.apparent_encoding or "utf-8"  # server omits charset; page is UTF-8
+    soup = BeautifulSoup(response.text, "html.parser")
     results = []
     for link in soup.select('a[href*="/property"], a[href*="/imovel"], a[href*="a155"]'):
         href = link.get("href", "")
         text = link.parent.get_text(" ", strip=True)
         if "lisboa" not in text.casefold(): continue
         price = re.search(r"([\d.]+)\s*EUR", text)
-        match = re.search(r"\bT[0-9]+\b|\b([0-9]+)\s+quartos", text, re.I)
-        results.append({"source":"HomeLovers","title":link.get_text(" ",strip=True) or text[:160],"address":text,"municipality":"Lisboa","published_price_eur":parse_price(price.group(1)) if price else None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat(),"typology":match.group(0).upper() if match and match.group(0).upper().startswith("T") else ""})
+        freguesia = re.search(r"Lisboa\s*-\s*(.+?)\s+(?:TO\s+BUY|TO\s+RENT|Quartos)", text, re.I)
+        rooms = re.search(r"\b([0-9])\s+Quartos\b", text, re.I)
+        address = f"{freguesia.group(1).strip()}, Lisboa, Lisboa" if freguesia else "Lisboa"
+        results.append({"source":"HomeLovers","title":link.get_text(" ",strip=True) or text[:160],"address":address,"municipality":"Lisboa","published_price_eur":parse_price(price.group(1)) if price else None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat(),"typology":f"T{rooms.group(1)}" if rooms else ""})
     return list({x["url"]:x for x in results}.values())
 
 
@@ -250,10 +254,6 @@ def crawl_green_acres(session):
     return crawl_reference_source(session, "Green Acres", "https://www.green-acres.pt/")
 
 
-def crawl_homelovers(session):
-    return crawl_reference_source(session, "HomeLovers", "https://www.homelovers.com/")
-
-
 def crawl_idealista(session):
     return crawl_reference_source(session, "Idealista", "https://www.idealista.pt/comprar-casas/lisboa/")
 
@@ -266,14 +266,6 @@ def crawl_properstar(session):
     return crawl_reference_source(session, "Properstar", "https://www.properstar.pt/")
 
 
-def crawl_pure_portugal(session):
-    return crawl_reference_source(session, "Pure Portugal", "https://www.pureportugal.co.uk/")
-
-
-def crawl_remax(session):
-    return crawl_reference_source(session, "RE/MAX Portugal", "https://www.remax.pt/comprar")
-
-
 def crawl_sapo(session):
     return crawl_reference_source(session, "SAPO Imóveis", "https://casa.sapo.pt/comprar/")
 
@@ -281,13 +273,6 @@ def crawl_sapo(session):
 def crawl_supercasa(session):
     return crawl_reference_source(session, "SuperCasa", "https://supercasa.pt/comprar-casas/lisboa")
 
-
-def crawl_zome(session):
-    return crawl_reference_source(session, "Zome", "https://www.zome.pt/pt")
-
-
-def crawl_iad(session):
-    return crawl_reference_source(session, "iad Portugal", "https://www.iadportugal.pt/")
 
 def main():
     parser = argparse.ArgumentParser()
