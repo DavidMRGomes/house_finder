@@ -313,7 +313,11 @@ class Crawler:
         listings: list[Listing] = []
         for card in soup.select(".property-card"):
             text = card.get_text(" ", strip=True)
-            if "lisboa" not in text.lower():
+            location_node = card.select_one(".property-card__location")
+            location = location_node.get_text(" ", strip=True) if location_node else ""
+            location_parts = [part.strip() for part in location.split(",") if part.strip()]
+            municipality = location_parts[-2] if len(location_parts) >= 2 else ""
+            if municipality.casefold() != "lisboa":
                 continue
             link = card.select_one('a[aria-label="Saber mais"][href]')
             if not link:
@@ -321,7 +325,7 @@ class Crawler:
             title = next((heading.get_text(" ", strip=True) for heading in card.select("h2, h3, h4")), text[:160])
             price = re.search(r"([\d.\s]+(?:,\d{1,2})?)\s*€", text)
             image = card.select_one("img[src], img[data-src]")
-            listings.append(Listing("Caixa Imobiliario", title, text, "Lisboa", published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=urljoin(page_url, link["href"]), last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else ""))
+            listings.append(Listing("Caixa Imobiliario", title, location, municipality, published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=urljoin(page_url, link["href"]), last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else ""))
         return listings
 
     def unavailable_sources(self) -> None:
@@ -453,6 +457,7 @@ def write_output(listings: Iterable[Listing], statuses: Iterable[dict[str, str |
     with db.connect(db_path) as conn:
         for source in SOURCES:
             db.upsert_source(conn, source.name, source.url, source.category, source.notes, listing_type="auction")
+        conn.execute("DELETE FROM listings WHERE source = ?", ("Caixa Imobiliario",))
         for item in listing_rows:
             db.upsert_listing(conn, item, listing_type="auction")
         for status in statuses:
