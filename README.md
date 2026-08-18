@@ -9,9 +9,16 @@ that categorizes every listing, source, and discovery link.
 ```sh
 python3 scripts/auction_finder.py --inventory
 python3 scripts/auction_finder.py --crawl --db house_finder.db
+python3 scripts/auction_finder.py --tax --db house_finder.db
 python3 scripts/market_crawler.py --db house_finder.db
 python3 scripts/build_report.py --db house_finder.db --output houses.html
 ```
+
+The `--tax` command opens a dedicated visible browser profile for Portal das
+Finanças. Log in directly in that browser, including any MFA step, then press
+Enter in the terminal. Credentials are never read or stored by the crawler;
+the local session profile is kept in `.portal-das-financas-browser/` and is
+ignored by git.
 
 The crawler uses Playwright for browser-level diagnostics. Set it up once with:
 

@@ -21,6 +21,8 @@ import db
 
 USER_AGENT = "house-finder/0.2 (+public-auction-research; respectful crawling)"
 LISBON_DISTRICT_ID = "13"
+TAX_BROWSER_PROFILE = Path(__file__).parent.parent / ".portal-das-financas-browser"
+TAX_SALES_URL = "https://vendas.portaldasfinancas.gov.pt/"
 
 @dataclass(frozen=True)
 class Source:
@@ -356,6 +358,43 @@ class Crawler:
             self.record(source, error=f"browser adapter failed: {error}")
             return []
 
+    def portal_das_financas(self, profile_path: Path = TAX_BROWSER_PROFILE) -> list[Listing]:
+        source = next(item for item in SOURCES if item.name == "Portal das Financas")
+        results: list[Listing] = []
+        try:
+            with sync_playwright() as playwright:
+                context = playwright.chromium.launch_persistent_context(
+                    str(profile_path),
+                    headless=False,
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+                    locale="pt-PT",
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto(TAX_SALES_URL, wait_until="domcontentloaded", timeout=90000)
+                print("Log in to Portal das Finanças in the browser window, then return here.", file=sys.stderr)
+                input("Press Enter after login is complete: ")
+                page.goto(TAX_SALES_URL, wait_until="networkidle", timeout=90000)
+                results = self.portal_das_financas_parse(page)
+                context.close()
+            self.record(source, len(results), "authenticated session returned no Lisbon property records" if not results else "")
+        except Exception as error:
+            self.record(source, error=f"authenticated browser adapter failed: {error}")
+        return results
+
+    def portal_das_financas_parse(self, page) -> list[Listing]:
+        soup = BeautifulSoup(page.content(), "html.parser")
+        results: list[Listing] = []
+        for link in soup.select("a[href]"):
+            href = link.get("href", "")
+            card = link.find_parent(class_=re.compile(r"card|result|imovel|property|venda", re.I)) or link.parent
+            text = card.get_text(" ", strip=True)
+            if "lisboa" not in text.casefold() or not any(term in (href + text).casefold() for term in ("imovel", "venda", "leil", "lote")):
+                continue
+            price = re.search(r"([\d.\s]+(?:,\d{1,2})?)\s*€", text)
+            image = card.select_one("img[src], img[data-src]") if card else None
+            results.append(Listing("Portal das Financas", link.get_text(" ", strip=True) or text[:160], text, "Lisboa", published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=urljoin(page.url, href), last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else ""))
+        return results
+
     def caixa_imobiliario(self) -> list[Listing]:
         source = next(item for item in SOURCES if item.name == "Caixa Imobiliario")
         results: list[Listing] = []
@@ -550,6 +589,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", action="store_true")
     parser.add_argument("--crawl", action="store_true", help="crawl all configured sources")
+    parser.add_argument("--tax", action="store_true", help="open a dedicated browser profile for interactive Portal das Financas login and crawl it")
+    parser.add_argument("--tax-profile", type=Path, default=TAX_BROWSER_PROFILE, help="directory for the persistent Portal das Financas browser profile")
     parser.add_argument("--db", default=str(db.DEFAULT_DB_PATH), help="path to the SQLite database")
     parser.add_argument("--format", choices=("json", "csv"), default="json", help="also write a CSV export alongside the database")
     parser.add_argument("--csv-output", default="lisbon-auctions.csv")
@@ -564,6 +605,12 @@ def main() -> int:
         crawler.browser_probe()
         write_output(listings, crawler.status, args.db, args.format, args.csv_output)
         print(f"Wrote {len(listings)} Lisbon listings and {len(crawler.status)} source statuses to {args.db}")
+        return 0
+    if args.tax:
+        crawler = Crawler()
+        listings = crawler.portal_das_financas(args.tax_profile)
+        write_output(listings, crawler.status, args.db, args.format, args.csv_output)
+        print(f"Wrote {len(listings)} Portal das Financas Lisbon listings to {args.db}")
         return 0
     parser.error("choose --inventory or --crawl")
     return 2
