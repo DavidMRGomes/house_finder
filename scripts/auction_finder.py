@@ -53,7 +53,6 @@ SOURCES = (
     Source("Citius", "https://www.citius.mj.pt/portal/consultas/consultasvenda.aspx", "judicial", "Public judicial-sales search form; queried per court since it requires a court to be selected."),
     Source("Leilosoc", "https://www.leilosoc.com/category/5-imovel/", "auctioneer", "Public property lots."),
     Source("Euro Estates", "https://www.euroestates.pt/realestate/auctions", "auctioneer", "Public active-auctions search."),
-    Source("Vantagem Leiloes", "https://www.vantagemleiloes.com/", "auctioneer", "Configured source; DNS currently unavailable."),
     Source("Caixa Imobiliario", "https://www.caixaimobiliario.pt/pt/comprar?q=Lisboa", "bank", "Public Caixa Imobiliario Lisbon property search."),
     Source("Millennium BCP Imoveis", "https://ind.millenniumbcp.pt/pt/Particulares/viver/Imoveis/Pages/imoveis.aspx#/default.aspx", "bank", "Public Millennium BCP property portal."),
     Source("Bankinter Imoveis", "https://www.bankinter.pt/credito-habitacao/portal-imoveis-bankinter", "bank", "Bankinter property portal; current public route returns HTTP 403."),
