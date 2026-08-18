@@ -28,14 +28,15 @@ Prices are represented separately as `current_bid_eur`, `minimum_bid_eur`, and
 `published_price_eur`. An extractor must not infer an auction bid from a base
 or ordinary sale price. Missing values remain `null`.
 
-Currently implemented listing adapters are Leilosoc, Euro Estates, e-Leilões,
-and OneFix. Leiloatrium is checked through Chromium and currently reports zero
-Lisbon lots. The e-Leilões and OneFix adapters extract public bids, minimum
-bids, base values, and auction dates. Citius and the tax portal are still
-recorded with their live access status because their official routes return
-HTTP 404 from this server. Santander Imóveis is a public property portal, but
-its records are not assumed to be auctions; Segurança Social redirects to an
 authenticated area.
+Currently implemented listing adapters are Leilosoc, Euro Estates, e-Leilões,
+OneFix, Caixa Imobiliário, Millennium BCP, Montepio, Bankinter, Segurança
+Social, and Santander Imóveis. Leiloatrium is checked through Chromium and
+currently reports zero Lisbon lots. The e-Leilões and OneFix adapters extract
+public bids, minimum bids, base values, and auction dates. Citius checks every
+court and keeps only properties whose location column is in Lisboa. Some
+sources may return zero records or an access-status message when no public
+Lisbon inventory is currently exposed.
 
 ## Database
 

@@ -281,6 +281,82 @@ class Crawler:
             listings.append(Listing("Seguranca Social", text or card_text[:160], card_text, "Lisboa", published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=urljoin(page_url, href), last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else ""))
         return listings
 
+    def millennium_imoveis(self) -> list[Listing]:
+        source = next(item for item in SOURCES if item.name == "Millennium BCP Imoveis")
+        base = "https://millenniumimoveis.janeladigital.com"
+        search_pages = ("/Search.aspx", "/Search.aspx?tab=329", "/Search.aspx?tab=204", "/Search.aspx?tab=313&toptab=204", "/Search.aspx?tab=201", "/Search.aspx?tab=202", "/Search.aspx?tab=203")
+        found: dict[str, Listing] = {}
+        try:
+            for path in search_pages:
+                response = self.session.get(urljoin(base, path), timeout=30)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, "html.parser")
+                for link in soup.select('a[href*="Detail.aspx"]'):
+                    url = urljoin(base, link["href"])
+                    card = link.find_parent(class_=re.compile(r"imov|property|result|box|item", re.I)) or link.parent
+                    text = card.get_text(" ", strip=True)
+                    if "lisboa" not in text.casefold():
+                        continue
+                    location = re.search(r"Concelho\s*:\s*([^|]+?)(?:\s+Freguesia|\s+Imóvel|$)", text, re.I)
+                    municipality = location.group(1).strip() if location else "Lisboa"
+                    if municipality.casefold() != "lisboa":
+                        continue
+                    title = link.get_text(" ", strip=True) or text[:160]
+                    price = re.search(r"([\d.\s]+(?:,\d{1,2})?)\s*€", text)
+                    image = card.select_one("img[src], img[data-src]") if card else None
+                    found[url] = Listing("Millennium BCP Imoveis", title, text, municipality, published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=url, last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else "")
+            results = list(found.values())
+            self.record(source, len(results), "no Lisbon property records currently exposed" if not results else "")
+            return results
+        except requests.RequestException as error:
+            self.record(source, error=str(error))
+            return []
+
+    def montepio_imoveis(self) -> list[Listing]:
+        source = next(item for item in SOURCES if item.name == "Montepio Imoveis")
+        try:
+            soup = BeautifulSoup(self.get(source.url).text, "html.parser")
+            results: dict[str, Listing] = {}
+            for link in soup.select('a[href*="/Comprar/"][href*="uid="]'):
+                href = link.get("href", "")
+                path_parts = [part for part in href.split("?")[0].split("/") if part]
+                if len(path_parts) < 2 or path_parts[-2].casefold() != "lisboa":
+                    continue
+                card = link.find_parent(class_=re.compile(r"card|result|imovel|property|item", re.I)) or link.parent
+                text = card.get_text(" ", strip=True)
+                title = link.get_text(" ", strip=True) or text[:160]
+                price = re.search(r"([\d.\s]+(?:,\d{1,2})?)\s*€", text)
+                image = card.select_one("img[src], img[data-src]") if card else None
+                url = urljoin(source.url, href)
+                results[url] = Listing("Montepio Imoveis", title, text, "Lisboa", published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=url, last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else "")
+            rows = list(results.values())
+            self.record(source, len(rows), "no Lisbon property records currently exposed" if not rows else "")
+            return rows
+        except requests.RequestException as error:
+            self.record(source, error=str(error))
+            return []
+
+    def bankinter_imoveis(self) -> list[Listing]:
+        source = next(item for item in SOURCES if item.name == "Bankinter Imoveis")
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36", locale="pt-PT")
+                page.goto(source.url, wait_until="networkidle", timeout=90000)
+                soup = BeautifulSoup(page.content(), "html.parser")
+                browser.close()
+            rows = []
+            for link in soup.select('a[href]'):
+                text = link.get_text(" ", strip=True)
+                if "lisboa" not in text.casefold() or not any(term in link.get("href", "").casefold() for term in ("imovel", "property", "casa")):
+                    continue
+                rows.append(Listing("Bankinter Imoveis", text, text, "Lisboa", url=urljoin(source.url, link["href"]), last_seen=now()))
+            self.record(source, len(rows), "no public Lisbon listing links currently exposed" if not rows else "")
+            return rows
+        except Exception as error:
+            self.record(source, error=f"browser adapter failed: {error}")
+            return []
+
     def caixa_imobiliario(self) -> list[Listing]:
         source = next(item for item in SOURCES if item.name == "Caixa Imobiliario")
         results: list[Listing] = []
@@ -332,7 +408,7 @@ class Crawler:
         return listings
 
     def unavailable_sources(self) -> None:
-        implemented = {"Leilosoc", "Euro Estates", "e-leiloes", "Leiloatrium", "OneFix", "Citius", "Santander Imoveis", "Seguranca Social", "Caixa Imobiliario"}
+        implemented = {"Leilosoc", "Euro Estates", "e-leiloes", "Leiloatrium", "OneFix", "Citius", "Santander Imoveis", "Seguranca Social", "Caixa Imobiliario", "Millennium BCP Imoveis", "Bankinter Imoveis", "Montepio Imoveis"}
         for source in SOURCES:
             if source.name not in implemented:
                 try:
@@ -484,7 +560,7 @@ def main() -> int:
         return 0
     if args.crawl:
         crawler = Crawler()
-        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix() + crawler.citius() + crawler.santander_imoveis() + crawler.seguranca_social() + crawler.caixa_imobiliario())
+        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix() + crawler.citius() + crawler.santander_imoveis() + crawler.seguranca_social() + crawler.caixa_imobiliario() + crawler.millennium_imoveis() + crawler.bankinter_imoveis() + crawler.montepio_imoveis())
         crawler.unavailable_sources()
         crawler.browser_probe()
         write_output(listings, crawler.status, args.db, args.format, args.csv_output)
