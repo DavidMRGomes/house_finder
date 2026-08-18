@@ -17,6 +17,9 @@ python3 scripts/build_report.py --db house_finder.db --output houses.html
 Market homes are ordered newest first when a source publishes `datePosted` or
 `datePublished`; sources without a publication date fall back to crawl time.
 The Market homes tab supports maximum price, Concelho, and Freguesia filters.
+It also supports multi-select Typology filters such as T0, T1, and T2. Location
+filters only expose values explicitly published by each source; a portal that
+returns only `Lisboa` cannot be safely assigned a Freguesia.
 Each configured market portal has a named adapter. The report footer separates
 sources crawled successfully from sources that were blocked, empty, or failed.
 

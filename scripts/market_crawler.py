@@ -35,13 +35,18 @@ def product_listing(product, source, url, location="Lisboa"):
     area = product.get("areaServed", location) if isinstance(product, dict) else location
     if isinstance(area, dict):
         area = area.get("name", location)
+    address = product.get("address", area) if isinstance(product, dict) else area
+    if isinstance(address, dict):
+        address = ", ".join(filter(None, (address.get("streetAddress", ""), address.get("addressLocality", ""), address.get("addressRegion", ""))))
+    municipality = product.get("address", {}).get("addressLocality", "") if isinstance(product.get("address"), dict) else ""
+    municipality = municipality or (str(area).split(",")[-2].strip() if len(str(area).split(",")) >= 2 else "Lisboa")
     if "lisboa" not in str(area).casefold() and "lisboa" not in location.casefold():
         return None
     return {
         "source": source,
         "title": product.get("name", url.rsplit("/", 1)[-1].replace("-", " ")),
-        "address": str(area),
-        "municipality": "Lisboa",
+        "address": str(address),
+        "municipality": municipality,
         "published_price_eur": offers.get("price"),
         "published_at": product.get("datePosted") or product.get("datePublished") or "",
         "url": url,
@@ -85,8 +90,8 @@ def crawl_custojusto(session):
         listings.append({
             "source": "CustoJusto Imobiliário",
             "title": product.get("name", url.rsplit("/", 1)[-1].replace("-", " ")),
-            "address": "Lisboa",
-            "municipality": "Lisboa",
+            "address": product.get("address", "Lisboa") if isinstance(product.get("address"), str) else "Lisboa",
+            "municipality": product.get("address", {}).get("addressLocality", "Lisboa") if isinstance(product.get("address"), dict) else "Lisboa",
             "published_price_eur": offer.get("price"),
             "published_at": product.get("datePosted") or product.get("datePublished") or "",
             "url": url,
