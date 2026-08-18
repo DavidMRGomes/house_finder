@@ -176,15 +176,21 @@ def crawl_remax(session):
 
 
 def crawl_iad(session):
-    root = "https://www.iadportugal.pt/anuncios/venda/apartamento"
+    root = "https://www.iadportugal.pt/anuncios/lisboa/venda/apartamento"
     soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
     results = []
-    for link in soup.select('a[href^="/anuncios/"]'):
+    for link in soup.select('a[href*="/anuncio/"]'):
         href = link.get("href", "")
         text = link.get_text(" ", strip=True)
-        if href.rstrip("/") == "/anuncios/venda/apartamento" or not text: continue
-        if "lisboa" not in (text + href).casefold(): continue
-        results.append({"source":"iad Portugal","title":text,"address":"Lisboa","municipality":"Lisboa","published_price_eur":None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat()})
+        if "lisboa" not in (text + href).casefold() or not text:
+            continue
+        card = link.find_parent("article") or link.parent
+        card_text = card.get_text(" ", strip=True)
+        price = re.search(r"([\d\s\xa0]{3,})\s*€", card_text)
+        location = re.search(r"\bem\s+(.+)$", text)
+        address = f"{location.group(1).strip()}, Lisboa, Lisboa" if location else "Lisboa"
+        image = card.select_one("img[src], img[data-src]")
+        results.append({"source":"iad Portugal","title":text,"address":address,"municipality":"Lisboa","published_price_eur":parse_price(price.group(1)) if price else None,"published_at":"","url":urljoin(root, href),"image_url":(image.get("data-src") or image.get("src") or "") if image else "","last_seen":datetime.now(timezone.utc).isoformat()})
     return list({x["url"]:x for x in results}.values())
 
 
@@ -233,7 +239,7 @@ def crawl_homelovers(session):
 
 
 def parse_price(value):
-    return float(value.replace(".", "").replace(" ", "").replace(",", "."))
+    return float(value.replace(".", "").replace(" ", "").replace("\xa0", "").replace(",", "."))
 
 
 def crawl_reference_source(session, source_name, root):
@@ -296,7 +302,7 @@ def main():
         ("SAPO Imóveis", crawl_sapo, "https://casa.sapo.pt/comprar/"),
         ("SuperCasa", crawl_supercasa, "https://supercasa.pt/comprar-casas/lisboa"),
         ("Zome", crawl_zome, "https://www.zome.pt/pt"),
-        ("iad Portugal", crawl_iad, "https://www.iadportugal.pt/anuncios/venda/apartamento"),
+        ("iad Portugal", crawl_iad, "https://www.iadportugal.pt/anuncios/lisboa/venda/apartamento"),
     )
     for name, crawler, root in crawlers:
         try:
