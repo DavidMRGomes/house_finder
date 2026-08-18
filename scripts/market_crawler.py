@@ -207,6 +207,7 @@ def main():
     args = parser.parse_args()
     session = requests.Session(); session.headers.update(HEADERS)
     listings, statuses = [], []
+    crawl_time = datetime.now(timezone.utc).isoformat()
     crawlers = (
         ("CustoJusto Imobiliário", crawl_custojusto_adapter, "https://www.custojusto.pt/portugal/imobiliario"),
         ("OLX Imóveis", crawl_olx_adapter, "https://www.olx.pt/imoveis/"),
@@ -253,10 +254,16 @@ def main():
         statuses.append({"source": source["name"], "url": source["url"], "listings": 0, "error": error})
     with db.connect(args.db) as conn:
         for item in listings:
+            existing = conn.execute("SELECT url FROM listings WHERE url = ?", (item.get("url", ""),)).fetchone()
             db.upsert_listing(conn, item, listing_type="market")
+            conn.execute("UPDATE listings SET first_seen = COALESCE(first_seen, ?), is_active = 1, removed_at = NULL WHERE url = ?", (crawl_time, item.get("url", "")))
+            if existing is None:
+                db.record_listing_event(conn, item, "new", crawl_time)
         for status in statuses:
             db.upsert_source(conn, status["source"], status.get("url", ""), "market", "Ordinary-sale market listing source.", listing_type="market")
             db.upsert_source_status(conn, status["source"], "market", status["listings"], status["error"])
+            if not status["error"]:
+                db.finalize_market_source(conn, status["source"], {item["url"] for item in listings if item["source"] == status["source"]}, crawl_time)
     print(f"Wrote {len(listings)} market listings to {args.db}")
 
 if __name__ == "__main__":

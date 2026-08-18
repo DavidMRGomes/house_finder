@@ -20,6 +20,10 @@ The Market homes tab supports maximum price, Concelho, and Freguesia filters.
 It also supports multi-select Typology filters such as T0, T1, and T2. Location
 filters only expose values explicitly published by each source; a portal that
 returns only `Lisboa` cannot be safely assigned a Freguesia.
+Market snapshots retain a rolling 30-day window. Each successful source crawl
+marks unseen previous listings as no longer listed, while new listings are
+recorded in `listing_events`; failed or blocked sources do not deactivate old
+records.
 Each configured market portal has a named adapter. The report footer separates
 sources crawled successfully from sources that were blocked, empty, or failed.
 

@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS discovery_links (
     text TEXT
 );
 
+CREATE TABLE IF NOT EXISTS listing_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL,
+    source TEXT NOT NULL,
+    event TEXT NOT NULL,
+    occurred_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_listings_type ON listings(listing_type);
 CREATE INDEX IF NOT EXISTS idx_listings_source ON listings(source);
 CREATE INDEX IF NOT EXISTS idx_listings_municipality ON listings(municipality);
@@ -76,6 +84,9 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(listings)")}
         if "published_at" not in columns:
             conn.execute("ALTER TABLE listings ADD COLUMN published_at TEXT")
+        for column, definition in (("first_seen", "TEXT"), ("is_active", "INTEGER DEFAULT 1"), ("removed_at", "TEXT")):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE listings ADD COLUMN {column} {definition}")
 
 
 def upsert_source(conn: sqlite3.Connection, name: str, url: str, category: str, notes: str, listing_type: str = "auction") -> None:
@@ -107,7 +118,8 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict, listing_type: str) -
         "title=excluded.title, address=excluded.address, municipality=excluded.municipality, "
         "current_bid_eur=excluded.current_bid_eur, minimum_bid_eur=excluded.minimum_bid_eur, "
         "published_price_eur=excluded.published_price_eur, auction_date=excluded.auction_date, "
-        "image_url=excluded.image_url, last_seen=excluded.last_seen, published_at=excluded.published_at",
+        "image_url=excluded.image_url, last_seen=excluded.last_seen, published_at=COALESCE(excluded.published_at, listings.published_at), "
+        "first_seen=COALESCE(listings.first_seen, excluded.last_seen), is_active=1, removed_at=NULL",
         {
             "url": listing.get("url", ""),
             "listing_type": listing_type,
@@ -124,6 +136,23 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict, listing_type: str) -
             "published_at": listing.get("published_at", ""),
         },
     )
+
+
+def record_listing_event(conn: sqlite3.Connection, listing: dict, event: str, occurred_at: str | None = None) -> None:
+    conn.execute(
+        "INSERT INTO listing_events (url, source, event, occurred_at) VALUES (?, ?, ?, ?)",
+        (listing.get("url", ""), listing.get("source", ""), event, occurred_at or now()),
+    )
+
+
+def finalize_market_source(conn: sqlite3.Connection, source: str, seen_urls: set[str], crawl_time: str) -> None:
+    rows = conn.execute("SELECT url, source, is_active FROM listings WHERE listing_type = 'market' AND source = ?", (source,)).fetchall()
+    for row in rows:
+        if row["url"] in seen_urls:
+            continue
+        if row["is_active"]:
+            conn.execute("UPDATE listings SET is_active = 0, removed_at = ? WHERE url = ?", (crawl_time, row["url"]))
+            record_listing_event(conn, {"url": row["url"], "source": source}, "removed", crawl_time)
 
 
 def upsert_discovery_link(conn: sqlite3.Connection, source: str, url: str, text: str) -> None:
