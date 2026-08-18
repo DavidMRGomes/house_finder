@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
@@ -21,6 +22,50 @@ def jsonld(soup):
             yield json.loads(tag.string or tag.get_text())
         except json.JSONDecodeError:
             continue
+
+
+def as_list(value):
+    return value if isinstance(value, list) else [value]
+
+
+def product_listing(product, source, url, location="Lisboa"):
+    offers = product.get("offers", {}) if isinstance(product, dict) else {}
+    if isinstance(offers, list):
+        offers = offers[0] if offers else {}
+    area = product.get("areaServed", location) if isinstance(product, dict) else location
+    if isinstance(area, dict):
+        area = area.get("name", location)
+    if "lisboa" not in str(area).casefold() and "lisboa" not in location.casefold():
+        return None
+    return {
+        "source": source,
+        "title": product.get("name", url.rsplit("/", 1)[-1].replace("-", " ")),
+        "address": str(area),
+        "municipality": "Lisboa",
+        "published_price_eur": offers.get("price"),
+        "published_at": product.get("datePosted") or product.get("datePublished") or "",
+        "url": url,
+        "image_url": (product.get("image") or [""])[0] if isinstance(product.get("image"), list) else product.get("image", ""),
+        "last_seen": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def crawl_jsonld_portal(session, source, root, source_name):
+    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    listings = []
+    for data in jsonld(soup):
+        for product in as_list(data.get("itemListElement", data) if isinstance(data, dict) else data):
+            if isinstance(product, dict) and "item" in product:
+                product = product["item"]
+            if not isinstance(product, dict) or product.get("@type") not in ("Product", "RealEstateListing"):
+                continue
+            url = product.get("url") or product.get("offers", {}).get("url", "")
+            if not url:
+                continue
+            listing = product_listing(product, source_name, urljoin(root, url))
+            if listing:
+                listings.append(listing)
+    return list({item["url"]: item for item in listings}.values())
 
 
 def crawl_custojusto(session):
@@ -43,6 +88,7 @@ def crawl_custojusto(session):
             "address": "Lisboa",
             "municipality": "Lisboa",
             "published_price_eur": offer.get("price"),
+            "published_at": product.get("datePosted") or product.get("datePublished") or "",
             "url": url,
             "image_url": (product.get("image") or [""])[0] if isinstance(product.get("image"), list) else product.get("image", ""),
             "last_seen": datetime.now(timezone.utc).isoformat(),
@@ -70,6 +116,7 @@ def crawl_olx(session):
                 "address": area_name,
                 "municipality": area_name,
                 "published_price_eur": offer.get("price"),
+                "published_at": product.get("datePosted") or product.get("datePublished") or "",
                 "url": urljoin(root, offer.get("url", "")),
                 "image_url": images[0] if isinstance(images, list) and images else "",
                 "last_seen": datetime.now(timezone.utc).isoformat(),
@@ -83,12 +130,30 @@ def main():
     args = parser.parse_args()
     session = requests.Session(); session.headers.update(HEADERS)
     listings, statuses = [], []
-    for name, crawler in (("CustoJusto", crawl_custojusto), ("OLX", crawl_olx)):
+    crawlers = (
+        ("CustoJusto", crawl_custojusto, "https://www.custojusto.pt/portugal/imobiliario"),
+        ("OLX", crawl_olx, "https://www.olx.pt/imoveis/"),
+        ("Imovirtual", lambda s: crawl_jsonld_portal(s, "Imovirtual", "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa", "Imovirtual"), "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa"),
+        ("Century 21 Portugal", lambda s: crawl_jsonld_portal(s, "Century 21 Portugal", "https://www.century21.pt/comprar", "Century 21 Portugal"), "https://www.century21.pt/comprar"),
+    )
+    for name, crawler, root in crawlers:
         try:
-            found = crawler(session); listings.extend(found); statuses.append({"source": name, "listings": len(found), "error": ""})
+            found = crawler(session); listings.extend(found); statuses.append({"source": name, "url": root, "listings": len(found), "error": ""})
         except requests.RequestException as error:
-            statuses.append({"source": name, "listings": 0, "error": str(error)})
+            statuses.append({"source": name, "url": root, "listings": 0, "error": str(error)})
     db.init_db(args.db)
+    known_statuses = {status["source"] for status in statuses}
+    with db.connect(args.db) as conn:
+        configured = db.fetch_sources(conn, "market")
+    for source in configured:
+        if source["name"] in known_statuses:
+            continue
+        try:
+            response = session.get(source["url"], timeout=30)
+            error = "no dedicated public listing adapter" if response.ok else f"HTTP {response.status_code}"
+        except requests.RequestException as error:
+            error = str(error)
+        statuses.append({"source": source["name"], "url": source["url"], "listings": 0, "error": error})
     with db.connect(args.db) as conn:
         for item in listings:
             db.upsert_listing(conn, item, listing_type="market")

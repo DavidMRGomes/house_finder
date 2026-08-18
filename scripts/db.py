@@ -73,6 +73,9 @@ def connect(db_path: Path | str = DEFAULT_DB_PATH):
 def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(listings)")}
+        if "published_at" not in columns:
+            conn.execute("ALTER TABLE listings ADD COLUMN published_at TEXT")
 
 
 def upsert_source(conn: sqlite3.Connection, name: str, url: str, category: str, notes: str, listing_type: str = "auction") -> None:
@@ -97,14 +100,14 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict, listing_type: str) -
         return
     conn.execute(
         "INSERT INTO listings (url, listing_type, source, title, address, municipality, current_bid_eur, "
-        "minimum_bid_eur, published_price_eur, auction_date, image_url, last_seen) "
+        "minimum_bid_eur, published_price_eur, auction_date, image_url, last_seen, published_at) "
         "VALUES (:url, :listing_type, :source, :title, :address, :municipality, :current_bid_eur, "
-        ":minimum_bid_eur, :published_price_eur, :auction_date, :image_url, :last_seen) "
+        ":minimum_bid_eur, :published_price_eur, :auction_date, :image_url, :last_seen, :published_at) "
         "ON CONFLICT(url) DO UPDATE SET listing_type=excluded.listing_type, source=excluded.source, "
         "title=excluded.title, address=excluded.address, municipality=excluded.municipality, "
         "current_bid_eur=excluded.current_bid_eur, minimum_bid_eur=excluded.minimum_bid_eur, "
         "published_price_eur=excluded.published_price_eur, auction_date=excluded.auction_date, "
-        "image_url=excluded.image_url, last_seen=excluded.last_seen",
+        "image_url=excluded.image_url, last_seen=excluded.last_seen, published_at=excluded.published_at",
         {
             "url": listing.get("url", ""),
             "listing_type": listing_type,
@@ -118,6 +121,7 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict, listing_type: str) -
             "auction_date": listing.get("auction_date", ""),
             "image_url": listing.get("image_url", ""),
             "last_seen": listing.get("last_seen", now()),
+            "published_at": listing.get("published_at", ""),
         },
     )
 

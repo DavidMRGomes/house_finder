@@ -14,6 +14,10 @@ python3 scripts/market_crawler.py --db house_finder.db
 python3 scripts/build_report.py --db house_finder.db --output houses.html
 ```
 
+Market homes are ordered newest first when a source publishes `datePosted` or
+`datePublished`; sources without a publication date fall back to crawl time.
+The Market homes tab supports maximum price, Concelho, and Freguesia filters.
+
 The `--tax` command opens a dedicated visible browser profile for Portal das
 Finanças. Log in directly in that browser, including any MFA step, then press
 Enter in the terminal. Credentials are never read or stored by the crawler;
@@ -66,7 +70,8 @@ search, source filtering, municipality filtering, price range filters, a
 and a source coverage ledger. Re-run `scripts/build_report.py` after crawling to
 refresh it from the database.
 
-The **Market homes** tab is populated by `market_crawler.py`. Its first public
-adapter currently extracts Lisbon-region listings from CustoJusto; other
-portals remain linked with their access status until they expose verifiable
-listing data.
+The **Market homes** tab is populated by `market_crawler.py`. It checks every
+configured market source, extracts verifiable public records from CustoJusto,
+OLX, Imovirtual, and Century 21 when their markup exposes them, and records a
+status for the remaining portals. Market records are ordered by publication
+date when provided by the source, otherwise by crawl time.
