@@ -48,13 +48,16 @@ SOURCES = (
     Source("Leiloatrium", "https://leiloatrium.pt/", "auctioneer", "Public judicial-sales auctioneer."),
     Source("OneFix", "https://www.onefix-leiloeiros.pt/tipo_verbas/1/Imoveis", "auctioneer", "Public property auction lots."),
     Source("Santander Imoveis", "https://imoveis.santander.pt", "bank", "Public bank property portal; not all listings are auctions."),
-    Source("Seguranca Social", "https://www.seg-social-patrimonio.pt/comprar/imoveis/?tipo=1", "government", "Public Social Security property sales portal."),
+    Source("Seguranca Social", "https://www.seg-social-patrimonio.pt/comprar/imoveis/default.aspx", "government", "Public Social Security property sales portal."),
     Source("Portal das Financas", "https://vendas.portaldasfinancas.gov.pt/", "tax", "Tax authority sales portal; public endpoint currently returns 404."),
     Source("Citius", "https://www.citius.mj.pt/portal/consultas/consultasvenda.aspx", "judicial", "Public judicial-sales search form; queried per court since it requires a court to be selected."),
     Source("Leilosoc", "https://www.leilosoc.com/category/5-imovel/", "auctioneer", "Public property lots."),
     Source("Euro Estates", "https://www.euroestates.pt/realestate/auctions", "auctioneer", "Public active-auctions search."),
     Source("Vantagem Leiloes", "https://www.vantagemleiloes.com/", "auctioneer", "Configured source; DNS currently unavailable."),
     Source("Caixa Imobiliario", "https://www.caixaimobiliario.pt/pt/comprar?q=Lisboa", "bank", "Public Caixa Imobiliario Lisbon property search."),
+    Source("Millennium BCP Imoveis", "https://ind.millenniumbcp.pt/pt/Particulares/viver/Imoveis/Pages/imoveis.aspx#/default.aspx", "bank", "Public Millennium BCP property portal."),
+    Source("Bankinter Imoveis", "https://www.bankinter.pt/credito-habitacao/portal-imoveis-bankinter", "bank", "Bankinter property portal; current public route returns HTTP 403."),
+    Source("Montepio Imoveis", "https://imoveisbancomontepio.pt/Comprar/Lisboa", "bank", "Public Montepio Lisbon property search."),
 )
 
 class Crawler:
