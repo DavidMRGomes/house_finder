@@ -253,7 +253,63 @@ def crawl_custojusto_imobiliario(session):
 
 
 def crawl_era_portugal(session):
-    return crawl_reference_source(session, "ERA Portugal", "https://www.era.pt/comprar")
+    root = "https://www.era.pt/comprar"
+    page_response = session.get(root, timeout=30)
+    token_match = re.search(r'__RequestVerificationToken[^>]*value="([^"]+)"', page_response.text)
+    if not token_match:
+        return []
+    headers = {
+        "requestverificationtoken": token_match.group(1),
+        "moduleid": "410",
+        "tabid": "36",
+        "x-requested-with": "XMLHttpRequest",
+        "content-type": "application/json",
+        "referer": root,
+    }
+    results = []
+    page = 1
+    while True:
+        payload = {
+            "page": str(page),
+            "propertiesTypeId": [1, 2],
+            "onlyDevelopments": False,
+            "order": "3",
+            "isResidential": True,
+            "nonResidential": False,
+            "districts": ["11"],
+            "counties": ["11-06-00-0"],  # concelho Lisboa
+            "businessTypeId": [1],  # Comprar (sale) only
+        }
+        response = session.post("https://www.era.pt/API/ServicesModule/Property/Search", json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        properties = data.get("PropertyList", [])
+        if not properties:
+            break
+        for record in properties:
+            gallery = record.get("Gallery") or []
+            price_value = (record.get("SellPrice") or {}).get("Value", "")
+            price_match = re.search(r"([\d][\d.\s\xa0]*)", price_value)
+            localization = record.get("Localization", "")
+            rooms = record.get("Rooms")
+            typology_match = re.search(r"\bT[0-9]+\b", record.get("Title", ""), re.I)
+            typology = typology_match.group(0).upper() if typology_match else (f"T{rooms}" if isinstance(rooms, int) else "")
+            results.append({
+                "source": "ERA Portugal",
+                "title": record.get("Title", "").strip() or "Imóvel em Lisboa",
+                "address": f"{localization}, Lisboa" if localization else "Lisboa",
+                "municipality": "Lisboa",
+                "published_price_eur": parse_price(price_match.group(1)) if price_match else None,
+                "published_at": "",
+                "url": record.get("DetailUrl", ""),
+                "image_url": gallery[0].get("Url", "") if gallery else "",
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": typology,
+            })
+        if page >= min(data.get("TotalPages", page), 60):
+            break
+        page += 1
+    return list({item["url"]: item for item in results if item["url"]}.values())
 
 
 def crawl_green_acres(session):
@@ -309,6 +365,8 @@ def main():
             found = crawler(session); listings.extend(found); statuses.append({"source": name, "url": root, "listings": len(found), "error": ""})
         except requests.RequestException as error:
             statuses.append({"source": name, "url": root, "listings": 0, "error": str(error)})
+        except Exception as error:
+            statuses.append({"source": name, "url": root, "listings": 0, "error": f"adapter failed: {error}"})
     db.init_db(args.db)
     known_statuses = {status["source"] for status in statuses}
     with db.connect(args.db) as conn:
