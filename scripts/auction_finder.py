@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass
@@ -362,6 +363,8 @@ class Crawler:
         source = next(item for item in SOURCES if item.name == "Portal das Financas")
         results: list[Listing] = []
         try:
+            if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+                raise RuntimeError("no graphical display; run from a desktop session or configure X11/Wayland forwarding")
             with sync_playwright() as playwright:
                 context = playwright.chromium.launch_persistent_context(
                     str(profile_path),
@@ -371,9 +374,8 @@ class Crawler:
                 )
                 page = context.pages[0] if context.pages else context.new_page()
                 page.goto(TAX_SALES_URL, wait_until="domcontentloaded", timeout=90000)
-                print("Log in to Portal das Finanças in the browser window, then return here.", file=sys.stderr)
-                input("Press Enter after login is complete: ")
-                page.goto(TAX_SALES_URL, wait_until="networkidle", timeout=90000)
+                print("Log in and open the Lisbon property-sale results in the browser window.", file=sys.stderr)
+                input("Press Enter here when the results page is ready to scrape: ")
                 results = self.portal_das_financas_parse(page)
                 context.close()
             self.record(source, len(results), "authenticated session returned no Lisbon property records" if not results else "")
@@ -610,6 +612,10 @@ def main() -> int:
         crawler = Crawler()
         listings = crawler.portal_das_financas(args.tax_profile)
         write_output(listings, crawler.status, args.db, args.format, args.csv_output)
+        error = next((status["error"] for status in crawler.status if status["source"] == "Portal das Financas" and status["error"]), "")
+        if error:
+            print(f"Portal das Financas crawl failed: {error}", file=sys.stderr)
+            return 1
         print(f"Wrote {len(listings)} Portal das Financas Lisbon listings to {args.db}")
         return 0
     parser.error("choose --inventory or --crawl")
