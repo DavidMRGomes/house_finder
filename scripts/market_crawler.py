@@ -15,6 +15,31 @@ import db
 
 HEADERS = {"User-Agent": "house-finder-market/0.1 (+public property research)"}
 
+# The 16 concelhos that make up distrito Lisboa; used to recognize a reliable concelho match.
+LISBON_DISTRICT_CONCELHOS = {
+    "Alenquer", "Amadora", "Arruda dos Vinhos", "Azambuja", "Cadaval", "Cascais",
+    "Lisboa", "Loures", "Lourinhã", "Mafra", "Odivelas", "Oeiras", "Sintra",
+    "Sobral de Monte Agraço", "Torres Vedras", "Vila Franca de Xira",
+}
+# Other district capitals/major cities; used as a safety net to discard leaked out-of-district results.
+OTHER_DISTRICT_CITY_MARKERS = {
+    "porto", "braga", "aveiro", "coimbra", "faro", "setubal", "setúbal", "santarem", "santarém",
+    "leiria", "viseu", "guarda", "castelo branco", "portalegre", "evora", "évora", "beja",
+    "vila real", "braganca", "bragança", "viana do castelo", "funchal", "ponta delgada",
+}
+
+
+def parse_area(value):
+    match = re.search(r"([\d][\d.,]*)", value or "")
+    if not match:
+        return None
+    text = match.group(1)
+    text = text.replace(".", "").replace(",", ".") if "," in text else text
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
 
 def jsonld(soup):
     for tag in soup.select('script[type="application/ld+json"]'):
@@ -87,16 +112,27 @@ def crawl_custojusto(session):
         offer = product.get("offers", {}) if isinstance(product, dict) else {}
         if isinstance(offer, list):
             offer = offer[0] if offer else {}
+        text = " | ".join(detail.stripped_strings)
+        location = re.search(r"Localiza[cç][aã]o \| ([^|]+) - ([^|]+) - ([^|]+)", text, re.I)
+        distrito, concelho, freguesia = (part.strip() for part in location.groups()) if location else ("", "", "")
+        if distrito and distrito.casefold() != "lisboa":
+            continue
+        typology = re.search(r"\bTipologia \| (T\d+)", text, re.I)
+        area = re.search(r"[Áá]rea (?:bruta|[uú]til) \| ([\d.,]+)\s*m", text, re.I)
         listings.append({
             "source": "CustoJusto Imobiliário",
             "title": product.get("name", url.rsplit("/", 1)[-1].replace("-", " ")),
-            "address": product.get("address", "Lisboa") if isinstance(product.get("address"), str) else "Lisboa",
-            "municipality": product.get("address", {}).get("addressLocality", "Lisboa") if isinstance(product.get("address"), dict) else "Lisboa",
+            "address": ", ".join(filter(None, (freguesia, concelho, distrito))) or "Lisboa",
+            "distrito": distrito or "Lisboa",
+            "municipality": concelho or "Lisboa",
+            "freguesia": freguesia,
             "published_price_eur": offer.get("price"),
             "published_at": product.get("datePosted") or product.get("datePublished") or "",
             "url": url,
             "image_url": (product.get("image") or [""])[0] if isinstance(product.get("image"), list) else product.get("image", ""),
             "last_seen": datetime.now(timezone.utc).isoformat(),
+            "typology": typology.group(1).upper() if typology else "",
+            "area_m2": parse_area(area.group(1)) if area else None,
         })
     return listings
 
@@ -145,20 +181,41 @@ def crawl_century21(session):
 
 
 def crawl_century21_api(session):
-    root = "https://www.century21.pt/api/properties?address_names=Lisboa&addresses=1106&page=1&ad_type=sell&order_by=entered_market_desc"
-    data = session.get(root, timeout=30).json()
-    records = data.get("properties", data.get("data", [])) if isinstance(data, dict) else data
+    # No public autocomplete endpoint was found to resolve other concelho ids, so this
+    # adapter is scoped to concelho Lisboa (address id 1106) rather than the full distrito.
+    root = "https://www.century21.pt/api/properties?address_names=Lisboa&addresses=1106&page={page}&ad_type=sell&order_by=entered_market_desc"
     results = []
-    for record in records or []:
-        address = record.get("address", "")
-        address = address if isinstance(address, str) else ", ".join(str(x) for x in address.values())
-        if "lisboa" not in address.casefold():
-            continue
-        rooms = record.get("number_of_rooms")
-        title = record.get("title", {})
-        title = title.get("pt", "") if isinstance(title, dict) else str(title)
-        results.append({"source":"Century 21 Portugal","title":title or "Imóvel em Lisboa","address":address,"municipality":"Lisboa","published_price_eur":record.get("price"),"published_at":record.get("entered_market_at", ""),"url":urljoin("https://www.century21.pt", record.get("link", "")),"image_url":(record.get("images") or [""])[0],"last_seen":datetime.now(timezone.utc).isoformat(),"typology":f"T{rooms}" if rooms is not None else ""})
-    return results
+    page = 1
+    while True:
+        response = session.get(root.format(page=page), timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        records = data.get("data", [])
+        if not records:
+            break
+        for record in records:
+            rooms = record.get("number_of_rooms")
+            title = record.get("title", {})
+            title = title.get("pt", "") if isinstance(title, dict) else str(title)
+            results.append({
+                "source": "Century 21 Portugal",
+                "title": title or "Imóvel em Lisboa",
+                "address": "Lisboa, Lisboa",
+                "distrito": "Lisboa",
+                "municipality": "Lisboa",
+                "freguesia": "",
+                "published_price_eur": record.get("price"),
+                "published_at": record.get("entered_market", ""),
+                "url": urljoin("https://www.century21.pt", record.get("link", "")),
+                "image_url": (record.get("images") or [""])[0],
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": f"T{rooms}" if rooms is not None else "",
+                "area_m2": record.get("gross_area") or record.get("useful_area"),
+            })
+        if page * 20 >= min(data.get("total", 0), 20 * 60):
+            break
+        page += 1
+    return list({item["url"]: item for item in results if item["url"]}.values())
 
 
 def crawl_remax(session):
@@ -176,22 +233,48 @@ def crawl_remax(session):
 
 
 def crawl_iad(session):
-    root = "https://www.iadportugal.pt/anuncios/lisboa/venda/apartamento"
-    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    api = "https://www.iadportugal.pt/api/properties"
+    base_params = [("serpSlug", "lisboa"), ("serpSlug", "venda"), ("serpSlug", "apartamento"), ("locale", "pt")]
     results = []
-    for link in soup.select('a[href*="/anuncio/"]'):
-        href = link.get("href", "")
-        text = link.get_text(" ", strip=True)
-        if "lisboa" not in (text + href).casefold() or not text:
-            continue
-        card = link.find_parent("article") or link.parent
-        card_text = card.get_text(" ", strip=True)
-        price = re.search(r"([\d\s\xa0]{3,})\s*€", card_text)
-        location = re.search(r"\bem\s+(.+)$", text)
-        address = f"{location.group(1).strip()}, Lisboa, Lisboa" if location else "Lisboa"
-        image = card.select_one("img[src], img[data-src]")
-        results.append({"source":"iad Portugal","title":text,"address":address,"municipality":"Lisboa","published_price_eur":parse_price(price.group(1)) if price else None,"published_at":"","url":urljoin(root, href),"image_url":(image.get("data-src") or image.get("src") or "") if image else "","last_seen":datetime.now(timezone.utc).isoformat()})
-    return list({x["url"]:x for x in results}.values())
+    page = 1
+    while True:
+        response = session.get(api, params=base_params + [("page", str(page))], timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        items = data.get("items", [])
+        if not items:
+            break
+        for item in items:
+            place = (item.get("location") or {}).get("place", "")
+            if any(marker in place.casefold() for marker in OTHER_DISTRICT_CITY_MARKERS):
+                continue
+            concelho = place if place in LISBON_DISTRICT_CONCELHOS else ""
+            freguesia = "" if concelho else place
+            rooms = next((r.get("value") for r in item.get("rooms", []) if r.get("type") == "bedrooms"), None)
+            area = next((s.get("value") for s in item.get("surfaceList", []) if s.get("type") == "gross-area"), None)
+            slug = (item.get("slugs") or {}).get("pt", "")
+            reference = item.get("propertyListingRef", "")
+            results.append({
+                "source": "iad Portugal",
+                "title": item.get("title", "Imóvel em Lisboa"),
+                "address": ", ".join(filter(None, (freguesia, concelho, "Lisboa"))),
+                "distrito": "Lisboa",
+                "municipality": concelho or "Lisboa",
+                "freguesia": freguesia,
+                "published_price_eur": (item.get("price") or {}).get("main"),
+                "published_at": "",
+                "url": f"https://www.iadportugal.pt/anuncio/{slug}/r{reference}" if slug and reference else "",
+                "image_url": (item.get("photos") or [""])[0],
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": f"T{rooms}" if rooms is not None else "",
+                "area_m2": area,
+            })
+        total_items = data.get("totalItems", 0)
+        per_page = data.get("itemsPerPage") or 30
+        if page * per_page >= total_items:
+            break
+        page += 1
+    return list({item["url"]: item for item in results if item["url"]}.values())
 
 
 def crawl_zome(session):
@@ -229,13 +312,29 @@ def crawl_homelovers(session):
     for link in soup.select('a[href*="/property"], a[href*="/imovel"], a[href*="a155"]'):
         href = link.get("href", "")
         text = link.parent.get_text(" ", strip=True)
-        if "lisboa" not in text.casefold(): continue
+        if "TO BUY" not in text:
+            continue
+        location = re.search(r"REF:\s*\S+\s+([^-]+?)\s*-\s*(.+?)\s+TO\s+BUY", text)
+        concelho, freguesia = (part.strip() for part in location.groups()) if location else ("Lisboa", "")
         price = re.search(r"([\d.]+)\s*EUR", text)
-        freguesia = re.search(r"Lisboa\s*-\s*(.+?)\s+(?:TO\s+BUY|TO\s+RENT|Quartos)", text, re.I)
+        area = re.search(r"([\d.,]+)\s*m²", text)
         rooms = re.search(r"\b([0-9])\s+Quartos\b", text, re.I)
-        address = f"{freguesia.group(1).strip()}, Lisboa, Lisboa" if freguesia else "Lisboa"
-        results.append({"source":"HomeLovers","title":link.get_text(" ",strip=True) or text[:160],"address":address,"municipality":"Lisboa","published_price_eur":parse_price(price.group(1)) if price else None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat(),"typology":f"T{rooms.group(1)}" if rooms else ""})
-    return list({x["url"]:x for x in results}.values())
+        results.append({
+            "source": "HomeLovers",
+            "title": link.get_text(" ", strip=True) or text[:160],
+            "address": ", ".join(filter(None, (freguesia, concelho, "Lisboa"))),
+            "distrito": "Lisboa",
+            "municipality": concelho,
+            "freguesia": freguesia,
+            "published_price_eur": parse_price(price.group(1)) if price else None,
+            "published_at": "",
+            "url": urljoin(root, href),
+            "image_url": "",
+            "last_seen": datetime.now(timezone.utc).isoformat(),
+            "typology": f"T{rooms.group(1)}" if rooms else "",
+            "area_m2": parse_area(area.group(1)) if area else None,
+        })
+    return list({x["url"]: x for x in results}.values())
 
 
 def parse_price(value):
@@ -276,8 +375,7 @@ def crawl_era_portugal(session):
             "order": "3",
             "isResidential": True,
             "nonResidential": False,
-            "districts": ["11"],
-            "counties": ["11-06-00-0"],  # concelho Lisboa
+            "districts": ["11"],  # distrito Lisboa; no concelho restriction
             "businessTypeId": [1],  # Comprar (sale) only
         }
         response = session.post("https://www.era.pt/API/ServicesModule/Property/Search", json=payload, headers=headers, timeout=30)
@@ -290,23 +388,34 @@ def crawl_era_portugal(session):
             gallery = record.get("Gallery") or []
             price_value = (record.get("SellPrice") or {}).get("Value", "")
             price_match = re.search(r"([\d][\d.\s\xa0]*)", price_value)
-            localization = record.get("Localization", "")
+            # Localization is "Freguesia, Distrito"; Title is "Tipo / Concelho, Freguesia".
+            freguesia, _, distrito = (record.get("Localization", "") or "").partition(",")
+            freguesia, distrito = freguesia.strip(), distrito.strip()
+            if distrito and distrito.casefold() != "lisboa":
+                continue
+            title_text = record.get("Title", "")
+            concelho_match = re.search(r"/\s*([^,]+),", title_text)
+            concelho = concelho_match.group(1).strip() if concelho_match else ""
             rooms = record.get("Rooms")
-            typology_match = re.search(r"\bT[0-9]+\b", record.get("Title", ""), re.I)
+            typology_match = re.search(r"\bT[0-9]+\b", title_text, re.I)
             typology = typology_match.group(0).upper() if typology_match else (f"T{rooms}" if isinstance(rooms, int) else "")
+            area = record.get("ListingArea") or record.get("NetArea")
             results.append({
                 "source": "ERA Portugal",
-                "title": record.get("Title", "").strip() or "Imóvel em Lisboa",
-                "address": f"{localization}, Lisboa" if localization else "Lisboa",
-                "municipality": "Lisboa",
+                "title": title_text.strip() or "Imóvel em Lisboa",
+                "address": ", ".join(filter(None, (freguesia, concelho, distrito or "Lisboa"))),
+                "distrito": distrito or "Lisboa",
+                "municipality": concelho or "Lisboa",
+                "freguesia": freguesia,
                 "published_price_eur": parse_price(price_match.group(1)) if price_match else None,
                 "published_at": "",
                 "url": record.get("DetailUrl", ""),
                 "image_url": gallery[0].get("Url", "") if gallery else "",
                 "last_seen": datetime.now(timezone.utc).isoformat(),
                 "typology": typology,
+                "area_m2": parse_area(area) if area else None,
             })
-        if page >= min(data.get("TotalPages", page), 60):
+        if page >= min(data.get("TotalPages", page), 150):
             break
         page += 1
     return list({item["url"]: item for item in results if item["url"]}.values())

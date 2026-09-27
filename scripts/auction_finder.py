@@ -23,7 +23,8 @@ import db
 USER_AGENT = "house-finder/0.2 (+public-auction-research; respectful crawling)"
 LISBON_DISTRICT_ID = "13"
 TAX_BROWSER_PROFILE = Path(__file__).parent.parent / ".portal-das-financas-browser"
-TAX_SALES_URL = "https://vendas.portaldasfinancas.gov.pt/"
+TAX_LOGIN_URL = "https://www.acesso.gov.pt/v2/loginForm?partID=SIVI&path=/vendasat/lista/vendas"
+TAX_SALES_URL = "https://vendas.portaldasfinancas.gov.pt/vendasat/lista/vendas"
 
 @dataclass(frozen=True)
 class Source:
@@ -38,6 +39,7 @@ class Listing:
     title: str
     address: str = ""
     municipality: str = ""
+    freguesia: str = ""
     current_bid_eur: float | None = None
     minimum_bid_eur: float | None = None
     published_price_eur: float | None = None
@@ -52,7 +54,7 @@ SOURCES = (
     Source("OneFix", "https://www.onefix-leiloeiros.pt/tipo_verbas/1/Imoveis", "auctioneer", "Public property auction lots."),
     Source("Santander Imoveis", "https://imoveis.santander.pt", "bank", "Public bank property portal; not all listings are auctions."),
     Source("Seguranca Social", "https://www.seg-social-patrimonio.pt/comprar/imoveis/default.aspx", "government", "Public Social Security property sales portal."),
-    Source("Portal das Financas", "https://vendas.portaldasfinancas.gov.pt/", "tax", "Tax authority sales portal; public endpoint currently returns 404."),
+    Source("Portal das Financas", TAX_SALES_URL, "tax", "Tax authority SIVI property sales; requires authentication."),
     Source("Citius", "https://www.citius.mj.pt/portal/consultas/consultasvenda.aspx", "judicial", "Public judicial-sales search form; queried per court since it requires a court to be selected."),
     Source("Leilosoc", "https://www.leilosoc.com/category/5-imovel/", "auctioneer", "Public property lots."),
     Source("Euro Estates", "https://www.euroestates.pt/realestate/auctions", "auctioneer", "Public active-auctions search."),
@@ -60,6 +62,7 @@ SOURCES = (
     Source("Millennium BCP Imoveis", "https://ind.millenniumbcp.pt/pt/Particulares/viver/Imoveis/Pages/imoveis.aspx#/default.aspx", "bank", "Public Millennium BCP property portal."),
     Source("Bankinter Imoveis", "https://www.bankinter.pt/credito-habitacao/portal-imoveis-bankinter", "bank", "Bankinter property portal; current public route returns HTTP 403."),
     Source("Montepio Imoveis", "https://imoveisbancomontepio.pt/Comprar/Lisboa", "bank", "Public Montepio Lisbon property search."),
+    Source("Imobancos", "https://imobancos.pt/imoveis/page/1", "bank", "Public aggregator of bank-owned property portfolios; filtered to Apartamento/Moradia for sale."),
 )
 
 class Crawler:
@@ -338,6 +341,53 @@ class Crawler:
             self.record(source, error=str(error))
             return []
 
+    def imobancos(self) -> list[Listing]:
+        source = next(item for item in SOURCES if item.name == "Imobancos")
+        api = "https://imobancos.pt/api/properties/fetchProperties"
+        filters = (
+            '(prop_type = "Apartamento" OR prop_type = "Moradia") AND '
+            '(prop_purpose = "Comprar" OR prop_purpose = "Venda" OR prop_purpose = "comprar" OR prop_purpose = "venda") AND '
+            'prop_district = "Lisboa"'
+        )
+        results: list[Listing] = []
+        try:
+            page = 1
+            while True:
+                response = self.session.post(api, json={"page": page, "hitsPerPage": 50, "filters": filters}, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                hits = data.get("hits", [])
+                if not hits:
+                    break
+                for hit in hits:
+                    property_id = hit.get("id")
+                    if not property_id:
+                        continue
+                    photos = hit.get("photos") or []
+                    image = photos[0].get("photo_url", "") if photos else ""
+                    parish = hit.get("prop_parish", "")
+                    county = hit.get("prop_county", "")
+                    district = hit.get("prop_district", "Lisboa")
+                    results.append(Listing(
+                        "Imobancos",
+                        hit.get("prop_title") or hit.get("prop_name") or "Imovel",
+                        ", ".join(filter(None, (parish, county, district))) or district,
+                        county or district,
+                        freguesia=parish,
+                        published_price_eur=hit.get("prop_price"),
+                        url=f"https://imobancos.pt/imoveis/{property_id}",
+                        last_seen=now(),
+                        image_url=image,
+                    ))
+                if page >= data.get("totalPages", page):
+                    break
+                page += 1
+            self.record(source, len(results), "no Lisbon property records currently exposed" if not results else "")
+            return results
+        except requests.RequestException as error:
+            self.record(source, error=str(error))
+            return []
+
     def bankinter_imoveis(self) -> list[Listing]:
         source = next(item for item in SOURCES if item.name == "Bankinter Imoveis")
         try:
@@ -373,28 +423,191 @@ class Crawler:
                     locale="pt-PT",
                 )
                 page = context.pages[0] if context.pages else context.new_page()
-                page.goto(TAX_SALES_URL, wait_until="domcontentloaded", timeout=90000)
-                print("Log in and open the Lisbon property-sale results in the browser window.", file=sys.stderr)
-                input("Press Enter here when the results page is ready to scrape: ")
-                results = self.portal_das_financas_parse(page)
+                page.goto(TAX_LOGIN_URL, wait_until="domcontentloaded", timeout=90000)
+                print("Complete the Portal das Financas login in the browser window.", file=sys.stderr)
+                input("Press Enter here after login is complete: ")
+                self.portal_das_financas_open_lisboa_listings(page, profile_path)
+                results = self.portal_das_financas_collect_pages(page)
+                self.portal_das_financas_enrich_locations(page, results)
+                if not results:
+                    debug_path = profile_path.parent / "portal-das-financas-debug.html"
+                    debug_path.write_text(page.content(), encoding="utf-8")
+                    print(f"No Lisbon rows matched; saved the rendered page to {debug_path} for inspection.", file=sys.stderr)
                 context.close()
             self.record(source, len(results), "authenticated session returned no Lisbon property records" if not results else "")
         except Exception as error:
             self.record(source, error=f"authenticated browser adapter failed: {error}")
         return results
 
+    def portal_das_financas_open_lisboa_listings(self, page, profile_path: Path) -> None:
+        """Navigate from the post-login landing page to the Imoveis list filtered by Lisboa, when the site exposes those controls."""
+        page.goto(TAX_SALES_URL, wait_until="networkidle", timeout=90000)
+        page.wait_for_timeout(1500)
+        checkbox_dump = profile_path.parent / "portal-das-financas-checkboxes.json"
+        checkbox_dump.write_text(json.dumps(self.portal_das_financas_checkbox_info(page), ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Saved {checkbox_dump.name} with every checkbox's id/name/label for diagnosis.", file=sys.stderr)
+        if not self.portal_das_financas_isolate_checkbox(page, r"^im[oó]veis$"):
+            print("warning: could not isolate 'Imoveis' in the Categorias filter", file=sys.stderr)
+        if not self.portal_das_financas_isolate_checkbox(page, r"^lisboa$"):
+            print("warning: could not isolate 'Lisboa' in the Distrito filter", file=sys.stderr)
+        apply_button = page.get_by_role("button", name=re.compile(r"aplicar filtros|aplicar|pesquisar|procurar", re.I)).first
+        if apply_button.count():
+            try:
+                apply_button.click(timeout=10000)
+                page.wait_for_load_state("networkidle", timeout=60000)
+            except Exception as error:
+                print(f"warning: could not click Aplicar filtros: {error}", file=sys.stderr)
+        else:
+            print("warning: 'Aplicar filtros' button not found", file=sys.stderr)
+        page.wait_for_timeout(1500)
+
+    CHECKBOX_INFO_SCRIPT = """els => els.map((el, i) => {
+        const id = el.id || '';
+        const name = el.getAttribute('name') || '';
+        const idCandidates = [id, id.replace(/1$/, '')];
+        let labelFor = null;
+        for (const candidate of idCandidates) {
+            if (!candidate) continue;
+            labelFor = document.querySelector(`label[for="${CSS.escape(candidate)}"]`);
+            if (labelFor) break;
+        }
+        const closestLabel = el.closest('label');
+        const checkboxRow = el.closest('.checkbox-vendas');
+        const nameLabel = checkboxRow ? checkboxRow.querySelector('label.font-thin') : null;
+        const genericRow = el.closest('tr, li');
+        const aria = el.getAttribute('aria-label') || '';
+        const next = el.nextElementSibling ? el.nextElementSibling.innerText : '';
+        const label = (labelFor && labelFor.innerText) || (closestLabel && closestLabel.innerText) || (nameLabel && nameLabel.innerText) || aria || next || (genericRow && genericRow.innerText) || '';
+        const group = checkboxRow ? (checkboxRow.id || checkboxRow.className) : '';
+        return {index: i, id, name, checked: el.checked, label: label.trim().slice(0, 80), group};
+    })"""
+
+    def portal_das_financas_checkbox_info(self, page) -> list[dict]:
+        return page.locator("input[type=checkbox]").evaluate_all(self.CHECKBOX_INFO_SCRIPT)
+
+    @staticmethod
+    def _checkbox_group_key(value: str) -> str:
+        """Collapse the numeric index out of ids/names like lstCategoriasAll3.selecionado1 so siblings share a key."""
+        return re.sub(r"\d+", "", value or "")
+
+    def portal_das_financas_isolate_checkbox(self, page, option_regex: str) -> bool:
+        """Deselect every other checkbox in the option's filter group, then check only the matching option."""
+        pattern = re.compile(option_regex, re.I)
+        checkboxes = page.locator("input[type=checkbox]")
+        if not checkboxes.count():
+            return False
+        infos = self.portal_das_financas_checkbox_info(page)
+        target = next((info for info in infos if pattern.search(info["label"])), None)
+        if target is None:
+            return False
+        target_locator = checkboxes.nth(target["index"])
+        if target.get("group"):
+            group = [info for info in infos if info.get("group") == target["group"]]
+        else:
+            key = self._checkbox_group_key(target["id"] or target["name"])
+            group = [info for info in infos if key and self._checkbox_group_key(info["id"] or info["name"]) == key]
+        if len(group) <= 1:
+            container = target_locator.locator("xpath=ancestor::fieldset[1]")
+            if not container.count():
+                container = target_locator.locator("xpath=ancestor::*[self::ul or self::div][.//input[@type='checkbox']][1]")
+            group_locators = [container.locator("input[type=checkbox]").nth(i) for i in range(container.locator("input[type=checkbox]").count())] if container.count() else []
+        else:
+            group_locators = [checkboxes.nth(info["index"]) for info in group]
+        for box in group_locators:
+            try:
+                if box.is_checked():
+                    box.uncheck(timeout=5000, force=True)
+            except Exception:
+                continue
+        try:
+            target_locator.check(timeout=5000, force=True)
+        except Exception:
+            target_locator.click(timeout=5000)
+        return True
+
+    def portal_das_financas_collect_pages(self, page, max_pages: int = 20) -> list[Listing]:
+        results: list[Listing] = []
+        seen_urls: set[str] = set()
+        for _ in range(max_pages):
+            for listing in self.portal_das_financas_parse(page):
+                if listing.url in seen_urls:
+                    continue
+                seen_urls.add(listing.url)
+                results.append(listing)
+            next_page = page.get_by_role("link", name=re.compile(r"seguinte|pr[oó]xim", re.I)).first
+            if not next_page.count() or next_page.is_disabled():
+                break
+            try:
+                next_page.click(timeout=10000)
+                page.wait_for_load_state("networkidle", timeout=60000)
+                page.wait_for_timeout(1000)
+            except Exception:
+                break
+        return results
+
+    def portal_das_financas_enrich_locations(self, page, listings: list[Listing]) -> None:
+        for listing in listings:
+            if not listing.url or "venda=" not in listing.url:
+                continue
+            detail_page = page.context.new_page()
+            try:
+                detail_page.goto(listing.url, wait_until="domcontentloaded", timeout=30000)
+                detail_text = detail_page.locator("body").inner_text(timeout=10000)
+                freguesia = self.portal_das_financas_extract_freguesia(detail_text)
+                if freguesia:
+                    listing.freguesia = freguesia
+                    listing.address = f"Freguesia: {freguesia}"
+            except Exception as error:
+                print(f"warning: could not read freguesia for {listing.title}: {error}", file=sys.stderr)
+            finally:
+                detail_page.close()
+
+    @staticmethod
+    def portal_das_financas_extract_freguesia(text: str) -> str:
+        patterns = (
+            r"\bFREGUESIA\s*:?\s*(?:(?:\d+)\s*[–-]\s*)?(?:de\s+)?([^,;\n)]+)",
+            r"\bfreguesia\s+(?:de\s+)?([^,;\n)]+)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, re.I)
+            if match:
+                return match.group(1).strip(" :|-–\t")
+        return ""
+
     def portal_das_financas_parse(self, page) -> list[Listing]:
+        """Parse the #tabelaBens result cards; the district/category filters already restrict this to Lisboa Imoveis."""
         soup = BeautifulSoup(page.content(), "html.parser")
         results: list[Listing] = []
-        for link in soup.select("a[href]"):
-            href = link.get("href", "")
-            card = link.find_parent(class_=re.compile(r"card|result|imovel|property|venda", re.I)) or link.parent
-            text = card.get_text(" ", strip=True)
-            if "lisboa" not in text.casefold() or not any(term in (href + text).casefold() for term in ("imovel", "venda", "leil", "lote")):
-                continue
-            price = re.search(r"([\d.\s]+(?:,\d{1,2})?)\s*€", text)
-            image = card.select_one("img[src], img[data-src]") if card else None
-            results.append(Listing("Portal das Financas", link.get_text(" ", strip=True) or text[:160], text, "Lisboa", published_price_eur=parse_euro_amount(price.group(1)) if price else None, url=urljoin(page.url, href), last_seen=now(), image_url=(image.get("data-src") or image.get("src") or "") if image else ""))
+        for card in soup.select("#tabelaBens .card.card-list"):
+            spans = card.select(".card-title span")
+            title = spans[0].get_text(strip=True) if spans else "Imovel"
+            reference = spans[1].get_text(strip=True) if len(spans) > 1 else ""
+            sale_type = card.select_one(".label")
+            sale_type_text = sale_type.get_text(strip=True) if sale_type else ""
+            text = " | ".join(card.stripped_strings)
+            values = [parse_euro_amount(el.get_text()) for el in card.select(".row.margin-top-sm + .row strong")]
+            base_value = values[0] if len(values) > 0 else None
+            current_value = values[1] if len(values) > 1 else None
+            closing = re.search(r"Encerra a\s*([\d-]+)\s*às\s*([\d:]+)h", text, re.I)
+            auction_date = f"{closing.group(1)} {closing.group(2)}h" if closing else ""
+            image = card.select_one("img.img-fluid")
+            detail_button = card.select_one("#btnDetalhe")
+            venda_id = detail_button.get("value", "") if detail_button else ""
+            url = urljoin(page.url, f"/vendasat/detalhe?venda={venda_id}") if venda_id else page.url
+            is_auction = "leil" in sale_type_text.casefold()
+            results.append(Listing(
+                "Portal das Financas",
+                f"{title} {reference}".strip(),
+                "Lisboa",
+                "Lisboa",
+                current_bid_eur=current_value if is_auction else None,
+                minimum_bid_eur=base_value if is_auction else None,
+                published_price_eur=None if is_auction else base_value,
+                auction_date=auction_date,
+                url=url,
+                last_seen=now(),
+                image_url=image.get("src", "") if image else "",
+            ))
         return results
 
     def caixa_imobiliario(self) -> list[Listing]:
@@ -602,7 +815,7 @@ def main() -> int:
         return 0
     if args.crawl:
         crawler = Crawler()
-        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix() + crawler.citius() + crawler.santander_imoveis() + crawler.seguranca_social() + crawler.caixa_imobiliario() + crawler.millennium_imoveis() + crawler.bankinter_imoveis() + crawler.montepio_imoveis())
+        listings = deduplicate(crawler.leilosoc() + crawler.euro_estates() + crawler.e_leiloes() + crawler.leiloatrium() + crawler.onefix() + crawler.citius() + crawler.santander_imoveis() + crawler.seguranca_social() + crawler.caixa_imobiliario() + crawler.millennium_imoveis() + crawler.bankinter_imoveis() + crawler.montepio_imoveis() + crawler.imobancos())
         crawler.unavailable_sources()
         crawler.browser_probe()
         write_output(listings, crawler.status, args.db, args.format, args.csv_output)
@@ -610,9 +823,13 @@ def main() -> int:
         return 0
     if args.tax:
         crawler = Crawler()
-        listings = crawler.portal_das_financas(args.tax_profile)
-        write_output(listings, crawler.status, args.db, args.format, args.csv_output)
+        listings = deduplicate(crawler.portal_das_financas(args.tax_profile))
         error = next((status["error"] for status in crawler.status if status["source"] == "Portal das Financas" and status["error"]), "")
+        if not error:
+            db.init_db(args.db)
+            with db.connect(args.db) as conn:
+                conn.execute("DELETE FROM listings WHERE source = ? AND listing_type = ?", ("Portal das Financas", "auction"))
+        write_output(listings, crawler.status, args.db, args.format, args.csv_output)
         if error:
             print(f"Portal das Financas crawl failed: {error}", file=sys.stderr)
             return 1

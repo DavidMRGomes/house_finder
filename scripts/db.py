@@ -32,7 +32,10 @@ CREATE TABLE IF NOT EXISTS listings (
     source TEXT NOT NULL,
     title TEXT,
     address TEXT,
+    distrito TEXT,
     municipality TEXT,
+    freguesia TEXT,
+    area_m2 REAL,
     current_bid_eur REAL,
     minimum_bid_eur REAL,
     published_price_eur REAL,
@@ -84,7 +87,7 @@ def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(listings)")}
         if "published_at" not in columns:
             conn.execute("ALTER TABLE listings ADD COLUMN published_at TEXT")
-        for column, definition in (("first_seen", "TEXT"), ("is_active", "INTEGER DEFAULT 1"), ("removed_at", "TEXT"), ("typology", "TEXT")):
+        for column, definition in (("first_seen", "TEXT"), ("is_active", "INTEGER DEFAULT 1"), ("removed_at", "TEXT"), ("typology", "TEXT"), ("freguesia", "TEXT"), ("distrito", "TEXT"), ("area_m2", "REAL")):
             if column not in columns:
                 conn.execute(f"ALTER TABLE listings ADD COLUMN {column} {definition}")
 
@@ -110,12 +113,15 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict, listing_type: str) -
     if not listing.get("url"):
         return
     conn.execute(
-        "INSERT INTO listings (url, listing_type, source, title, address, municipality, current_bid_eur, "
+        "INSERT INTO listings (url, listing_type, source, title, address, distrito, municipality, freguesia, area_m2, current_bid_eur, "
         "minimum_bid_eur, published_price_eur, auction_date, image_url, last_seen, published_at, typology) "
-        "VALUES (:url, :listing_type, :source, :title, :address, :municipality, :current_bid_eur, "
+        "VALUES (:url, :listing_type, :source, :title, :address, :distrito, :municipality, :freguesia, :area_m2, :current_bid_eur, "
         ":minimum_bid_eur, :published_price_eur, :auction_date, :image_url, :last_seen, :published_at, :typology) "
         "ON CONFLICT(url) DO UPDATE SET listing_type=excluded.listing_type, source=excluded.source, "
         "title=excluded.title, address=excluded.address, municipality=excluded.municipality, "
+        "distrito=COALESCE(NULLIF(excluded.distrito, ''), listings.distrito), "
+        "freguesia=COALESCE(NULLIF(excluded.freguesia, ''), listings.freguesia), "
+        "area_m2=COALESCE(excluded.area_m2, listings.area_m2), "
         "current_bid_eur=excluded.current_bid_eur, minimum_bid_eur=excluded.minimum_bid_eur, "
         "published_price_eur=excluded.published_price_eur, auction_date=excluded.auction_date, "
         "image_url=excluded.image_url, last_seen=excluded.last_seen, published_at=COALESCE(excluded.published_at, listings.published_at), "
@@ -126,7 +132,10 @@ def upsert_listing(conn: sqlite3.Connection, listing: dict, listing_type: str) -
             "source": listing.get("source", ""),
             "title": listing.get("title", ""),
             "address": listing.get("address", ""),
+            "distrito": listing.get("distrito", ""),
             "municipality": listing.get("municipality", ""),
+            "freguesia": listing.get("freguesia", ""),
+            "area_m2": listing.get("area_m2"),
             "current_bid_eur": listing.get("current_bid_eur"),
             "minimum_bid_eur": listing.get("minimum_bid_eur"),
             "published_price_eur": listing.get("published_price_eur"),

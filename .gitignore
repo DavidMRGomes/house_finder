@@ -3,3 +3,6 @@ __pycache__/
 *.db
 *.db-journal
 .portal-das-financas-browser/
+.venv
+portal-das-financas-debug.html
+portal-das-financas-checkboxes.json

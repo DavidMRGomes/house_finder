@@ -16,9 +16,10 @@ python3 scripts/build_report.py --db house_finder.db --output houses.html
 ```
 
 Run `./update_all.sh` to crawl the configured auction and market sources in
-sequence, then rebuild `houses.html`. Source-level blocks and failures are
-recorded in the report; the separate `--tax` command remains interactive and
-is not included in this batch update.
+sequence, including the interactive Portal das Finanças login, then rebuild
+`houses.html`. Source-level blocks and failures are recorded in the report.
+The script pauses after the public auction crawl while you complete the tax
+portal login in the browser window.
 
 Market homes are ordered newest first when a source publishes `datePosted` or
 `datePublished`; sources without a publication date fall back to crawl time.
@@ -34,9 +35,9 @@ Each configured market portal has a named adapter. The report footer separates
 sources crawled successfully from sources that were blocked, empty, or failed.
 
 The `--tax` command opens a dedicated visible browser profile for Portal das
-Finanças. Log in directly in that browser, including any MFA step, navigate to
-the Lisbon property-sale results, then press Enter in the terminal to scrape
-the page currently open. Credentials are never read or stored by the crawler;
+Finanças. Log in directly in that browser, including any MFA step, then press
+Enter in the terminal. The crawler opens the SIVI sales list after login and
+scrapes that page. Credentials are never read or stored by the crawler;
 the local session profile is kept in `.portal-das-financas-browser/` and is
 ignored by git. This interactive command requires a graphical desktop; a
 headless SSH or VS Code server session needs X11/Wayland forwarding to display
@@ -45,7 +46,7 @@ the login window.
 The crawler uses Playwright for browser-level diagnostics. Set it up once with:
 
 ```sh
-python3 -m pip install playwright requests beautifulsoup4
+python3 -m pip install -r requirements.txt
 python3 -m playwright install chromium
 ```
 
