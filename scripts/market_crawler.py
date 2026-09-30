@@ -450,9 +450,6 @@ def crawl_imobancos(session):
     results = []
     page = 1
     
-    # Add more verbose logging
-    print(f"Starting to crawl Imobancos at {root}")
-    
     while True:
         try:
             response = session.get(root, timeout=30)
@@ -625,10 +622,13 @@ def main():
     for name, crawler, root in crawlers:
         try:
             found = crawler(session); listings.extend(found); statuses.append({"source": name, "url": root, "listings": len(found), "error": ""})
+            print(f"Crawled {name} got {len(found)} listings")
         except requests.RequestException as error:
             statuses.append({"source": name, "url": root, "listings": 0, "error": str(error)})
+            print(f"Error crawling {name}: {str(error)}")
         except Exception as error:
             statuses.append({"source": name, "url": root, "listings": 0, "error": f"adapter failed: {error}"})
+            print(f"Error crawling {name}: {str(error)}")
     db.init_db(args.db)
     known_statuses = {status["source"] for status in statuses}
     with db.connect(args.db) as conn:
@@ -661,7 +661,18 @@ def main():
             db.upsert_source_status(conn, status["source"], "market", status["listings"], status["error"])
             if not status["error"]:
                 db.finalize_market_source(conn, status["source"], {item["url"] for item in listings if item["source"] == status["source"]}, crawl_time)
+    
     print(f"Wrote {len(listings)} market listings to {args.db}")
+    
+    # Print summary of listings per source
+    print("\nCrawling Summary:")
+    print("-" * 50)
+    for status in statuses:
+        if status["listings"] > 0:
+            print(f"Crawled {status['source']}: {status['listings']} listings")
+        else:
+            print(f"Crawled {status['source']}: 0 listings (Error: {status['error']})")
+
 
 if __name__ == "__main__":
     main()
