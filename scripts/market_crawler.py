@@ -449,70 +449,152 @@ def crawl_imobancos(session):
     root = "https://www.imobancos.pt/en/imoveis/Lisboa/page/1"
     results = []
     page = 1
+    
+    # Add more verbose logging
+    print(f"Starting to crawl Imobancos at {root}")
+    
     while True:
-        # Simulated data extraction with correct structure
-        # This function would use actual scraping from Imobancos website
-        # Following pattern of similar crawlers like crawl_iad
         try:
             response = session.get(root, timeout=30)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
-            
+
             # Look for property listings and extract data
             property_cards = soup.select('.property-card') or soup.select('[data-property]')
-            
+
             if not property_cards:
+                print(f"No property cards found on page {page}")
                 break
-                
-            for card in property_cards:
-                title_elem = card.select_one('.property-title, h2')
-                price_elem = card.select_one('.price, .property-price')
-                address_elem = card.select_one('.address, .property-address') 
-                area_elem = card.select_one('.area, .property-area')
-                type_elem = card.select_one('.property-type, .type')
-                
-                # Extract data with graceful fallbacks
-                title = title_elem.get_text(strip=True) if title_elem else "Imóvel em Lisboa"
-                price = price_elem.get_text(strip=True) if price_elem else ""
-                address = address_elem.get_text(strip=True) if address_elem else ""
-                area_str = area_elem.get_text(strip=True) if area_elem else ""
-                prop_type = type_elem.get_text(strip=True) if type_elem else ""
-                
-                # Only include apartments and houses (moradia)
-                if 'apartamento' in prop_type.lower() or 'moradia' in prop_type.lower():
-                    # Get the actual URL for this property
-                    link_elem = card.select_one('a[href]')
-                    url = urljoin(root, link_elem.get('href', '')) if link_elem else ""
+
+            print(f"Found {len(property_cards)} property cards on page {page}")
+
+            for i, card in enumerate(property_cards):
+                try:
+                    # Extract all available information from the card
+                    title_elem = card.select_one('.property-title, h2')
+                    price_elem = card.select_one('.price, .property-price')
+                    address_elem = card.select_one('.address, .property-address') 
+                    area_elem = card.select_one('.area, .property-area')
+                    type_elem = card.select_one('.property-type, .type')
+                    description_elem = card.select_one('.property-description, p')
+                    features_elem = card.select('.property-feature, li')
+                    year_elem = card.select_one('.year, .construction-year')
+                    bedrooms_elem = card.select_one('.bedrooms, .bed')
+                    bathrooms_elem = card.select_one('.bathrooms, .bath')
                     
-                    # Extract area in square meters (if available)
-                    area_match = re.search(r'(\d+(?:\.\d+)?)\s*m²', area_str, re.IGNORECASE) 
-                    area_m2 = float(area_match.group(1)) if area_match else None
+                    # Extract data with graceful fallbacks
+                    title = title_elem.get_text(strip=True) if title_elem else "Imóvel em Lisboa"
+                    price = price_elem.get_text(strip=True) if price_elem else ""
+                    address = address_elem.get_text(strip=True) if address_elem else ""
+                    area_str = area_elem.get_text(strip=True) if area_elem else ""
+                    prop_type = type_elem.get_text(strip=True) if type_elem else ""
+                    description = description_elem.get_text(strip=True) if description_elem else ""
                     
-                    results.append({
-                        "source": "Imobancos",
-                        "title": title,
-                        "address": address,
-                        "distrito": "Lisboa",
-                        "municipality": "",  # Could be set from address later
-                        "freguesia": "",
-                        "published_price_eur": float(price.replace('€', '').replace('.', '').replace(',', '')) if price else None,
-                        "published_at": "",
-                        "url": url,
-                        "image_url": "",  # Would extract image URL if available
-                        "last_seen": datetime.now(timezone.utc).isoformat(),
-                        "typology": prop_type,
-                        "area_m2": area_m2,
-                    })
+                    # Get all features available
+                    features = []
+                    for feature in features_elem:
+                        feature_text = feature.get_text(strip=True)
+                        if feature_text and feature_text not in ["", " "] and len(feature_text) > 1:
+                            features.append(feature_text)
+                    
+                    print(f"Processing card {i+1}: {title} - {prop_type}")
+                    
+                    # Only include apartments and houses (moradia)
+                    if 'apartamento' in prop_type.lower() or 'moradia' in prop_type.lower():
+                        # Get the actual URL for this property
+                        link_elem = card.select_one('a[href]')
+                        url = urljoin(root, link_elem.get('href', '')) if link_elem else ""
+                        
+                        # Extract area in square meters (if available)
+                        area_match = re.search(r'(\d+(?:\.\d+)?)\s*m²', area_str, re.IGNORECASE) 
+                        area_m2 = float(area_match.group(1)) if area_match else None
+                        
+                        # Extract year of construction if available
+                        year = ""
+                        if year_elem:
+                            year_text = year_elem.get_text(strip=True)
+                            year_match = re.search(r'(\d{4})', year_text)
+                            year = year_match.group(1) if year_match else ""
+                            
+                        # Extract bedrooms and bathrooms
+                        bedrooms = ""
+                        if bedrooms_elem:
+                            bedroom_text = bedrooms_elem.get_text(strip=True)
+                            bed_match = re.search(r'(\d+)\s*(?:quartos|beds?|room)', bedroom_text, re.IGNORECASE)
+                            bedrooms = bed_match.group(1) if bed_match else ""
+                            
+                        bathrooms = ""
+                        if bathrooms_elem:
+                            bath_text = bathrooms_elem.get_text(strip=True)
+                            bath_match = re.search(r'(\d+)\s*(?:casas|bath)', bath_text, re.IGNORECASE)
+                            bathrooms = bath_match.group(1) if bath_match else ""
+                        
+                        # Extract more detailed information
+                        municipality = ""
+                        freguesia = ""
+                        
+                        # Try to extract location details from address or other data
+                        if address:
+                            # Parse address to find municipal and parish information (simplified)
+                            address_parts = address.split(',')
+                            if len(address_parts) > 1:
+                                municipality = address_parts[-2].strip() if len(address_parts) >= 2 else ""
+                                freguesia = address_parts[-1].strip() if len(address_parts) >= 1 else ""
+                        
+                        result_entry = {
+                            "source": "Imobancos",
+                            "title": title,
+                            "address": address,
+                            "distrito": "Lisboa",
+                            "municipality": municipality,
+                            "freguesia": freguesia,
+                            "published_price_eur": float(price.replace('€', '').replace('.', '').replace(',', '')) if price else None,
+                            "tipologia": prop_type,
+                            "area_m2": area_m2,
+                            "description": description,
+                            "features": features,
+                            "year_construction": year,
+                            "bedrooms": bedrooms,
+                            "bathrooms": bathrooms,
+                            "url": url,
+                            "crawl_timestamp": datetime.now(timezone.utc).isoformat(),
+                            # Add more verbose information
+                            "listing_number": f"{page}-{i+1}",
+                            "full_scraped_data": {
+                                "title": title,
+                                "price": price,
+                                "address": address,
+                                "type": prop_type,
+                                "area": area_str,
+                                "description": description,
+                                "features": features,
+                                "year_construction": year,
+                                "bedrooms": bedrooms,
+                                "bathrooms": bathrooms
+                            }
+                        }
+                        
+                        results.append(result_entry)
+                        print(f"Added listing: {title[:50]}... - Price: {price}")
+                    else:
+                        print(f"Skipping non-target property type: {prop_type}")
+                        
+                except Exception as card_error:
+                    print(f"Error processing card {i+1}: {str(card_error)}")
+                    continue
                     
             page += 1
-            # Simulate pagination to next page (would be replaced with actual logic)
+            # For demonstration, only crawl one page (would be removed for production)
+            print(f"Completed crawling page {page-1} of Imobancos")
             break
-            
-        except Exception:
-            # If one page fails, continue with others or give up gracefully
+
+        except Exception as e:
+            print(f"Error crawling Imobancos page {page}: {str(e)}")
             break
-    
-    return list({item["url"]: item for item in results if item["url"]}.values())
+
+    unique_results = list({item["url"]: item for item in results if item["url"]}.values())
+    print(f"Total listings collected: {len(unique_results)}")
+    return unique_results
 
 
 def main():
