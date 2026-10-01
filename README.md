@@ -12,12 +12,12 @@ python3 scripts/auction_finder.py --inventory
 python3 scripts/auction_finder.py --crawl --db house_finder.db
 python3 scripts/auction_finder.py --tax --db house_finder.db
 python3 scripts/market_crawler.py --db house_finder.db
-python3 scripts/build_report.py --db house_finder.db --output houses.html
+python3 scripts/build_report.py --db house_finder.db --output index.html
 ```
 
 Run `./update_all.sh` to crawl the configured auction and market sources in
 sequence, including the interactive Portal das Finanças login, then rebuild
-`houses.html`. Source-level blocks and failures are recorded in the report.
+`index.html`. Source-level blocks and failures are recorded in the report.
 The script pauses after the public auction crawl while you complete the tax
 portal login in the browser window.
 
@@ -83,7 +83,7 @@ Lisbon inventory is currently exposed.
 Re-running a crawler upserts rows by URL/name, so the database always reflects
 the latest crawl without growing unbounded.
 
-Open `houses.html` in a browser for the visual report. It includes
+Open `index.html` in a browser for the visual report. It includes
 search, source filtering, municipality filtering, price range filters, a
 "bid published" filter, price sorting, listing links, source-page images,
 and a source coverage ledger. Re-run `scripts/build_report.py` after crawling to

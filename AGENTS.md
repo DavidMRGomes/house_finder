@@ -50,12 +50,12 @@ When making changes to the codebase:
 Before finalizing changes:
 1. Ensure all crawlers still function correctly 
 2. Verify database integration works as expected
-3. Test that the houses.html generation process is unaffected
+3. Test that the index.html generation process is unaffected
 
 ## System Integration
 All crawlers integrate with the existing database system:
 - Listings are stored using the same schema structure
-- The houses.html file generation process uses standard filtering parameters 
+- The index.html file generation process uses standard filtering parameters 
 - Data consistency is maintained across all property sources
 
 ## Adding New Crawlers
@@ -87,7 +87,7 @@ def crawl_new_source(session):
 
 ## Testing and Validation
 - All crawlers should work independently and integrate properly with the database
-- Generated houses.html should display all listings correctly
+- Generated index.html should display all listings correctly
 - The update_all.sh script should execute successfully without errors
 
 ## Environment Requirements

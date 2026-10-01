@@ -172,7 +172,7 @@ renderDiscovery();
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default=str(db.DEFAULT_DB_PATH), help="path to the SQLite database")
-    parser.add_argument("--output", default="houses.html")
+    parser.add_argument("--output", default="index.html")
     args = parser.parse_args()
     build(args.db, Path(args.output))
     print(f"Wrote {args.output}")
