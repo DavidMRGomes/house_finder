@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.db
 *.db-journal
+!house_finder.db
 .portal-das-financas-browser/
 .venv
 portal-das-financas-debug.html
