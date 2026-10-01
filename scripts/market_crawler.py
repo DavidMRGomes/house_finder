@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import re
 from datetime import datetime, timezone
@@ -14,19 +15,6 @@ from bs4 import BeautifulSoup
 import db
 
 HEADERS = {"User-Agent": "house-finder-market/0.1 (+public property research)"}
-
-# The 16 concelhos that make up distrito Lisboa; used to recognize a reliable concelho match.
-LISBON_DISTRICT_CONCELHOS = {
-    "Alenquer", "Amadora", "Arruda dos Vinhos", "Azambuja", "Cadaval", "Cascais",
-    "Lisboa", "Loures", "Lourinhã", "Mafra", "Odivelas", "Oeiras", "Sintra",
-    "Sobral de Monte Agraço", "Torres Vedras", "Vila Franca de Xira",
-}
-# Other district capitals/major cities; used as a safety net to discard leaked out-of-district results.
-OTHER_DISTRICT_CITY_MARKERS = {
-    "porto", "braga", "aveiro", "coimbra", "faro", "setubal", "setúbal", "santarem", "santarém",
-    "leiria", "viseu", "guarda", "castelo branco", "portalegre", "evora", "évora", "beja",
-    "vila real", "braganca", "bragança", "viana do castelo", "funchal", "ponta delgada",
-}
 
 
 def parse_area(value):
@@ -99,7 +87,7 @@ def crawl_jsonld_portal(session, source, root, source_name):
 
 
 def crawl_custojusto(session):
-    root = "https://www.custojusto.pt/portugal/imobiliario"
+    root = "https://www.custojusto.pt/lisboa/imobiliario"
     soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
     urls = []
     for data in jsonld(soup):
@@ -116,6 +104,8 @@ def crawl_custojusto(session):
         location = re.search(r"Localiza[cç][aã]o \| ([^|]+) - ([^|]+) - ([^|]+)", text, re.I)
         distrito, concelho, freguesia = (part.strip() for part in location.groups()) if location else ("", "", "")
         if distrito and distrito.casefold() != "lisboa":
+            continue
+        if concelho and concelho.casefold() != "lisboa":
             continue
         typology = re.search(r"\bTipologia \| (T\d+)", text, re.I)
         area = re.search(r"[Áá]rea (?:bruta|[uú]til) \| ([\d.,]+)\s*m", text, re.I)
@@ -139,7 +129,9 @@ def crawl_custojusto(session):
 
 def crawl_olx(session):
     root = "https://www.olx.pt/imoveis/"
-    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    response = session.get(root, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
     listings = []
     for data in jsonld(soup):
         if not isinstance(data, dict) or data.get("@type") != "Product":
@@ -173,7 +165,55 @@ def crawl_olx_adapter(session):
 
 
 def crawl_imovirtual(session):
-    return crawl_jsonld_portal(session, "Imovirtual", "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa", "Imovirtual")
+    # The JSON-LD on search pages is generic site-wide SEO boilerplate, not the actual
+    # filtered results, so the real listings are read from the embedded __NEXT_DATA__ props.
+    # "lisboa/lisboa" is Imovirtual's distrito/concelho path; "lisboa" alone resolves to "todo-o-pais".
+    root = "https://www.imovirtual.com/pt/resultados/comprar/apartamento/lisboa/lisboa"
+    results = []
+    page = 1
+    while True:
+        response = session.get(root, params={"page": page}, timeout=30)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        tag = soup.select_one('script#__NEXT_DATA__')
+        if not tag:
+            break
+        data = json.loads(tag.string or tag.get_text())
+        search_ads = data.get("props", {}).get("pageProps", {}).get("data", {}).get("searchAds", {})
+        items = search_ads.get("items", [])
+        if not items:
+            break
+        for item in items:
+            slug = item.get("slug", "")
+            if not slug:
+                continue
+            locations = ((item.get("location") or {}).get("reverseGeocoding") or {}).get("locations", [])
+            by_level = {loc.get("locationLevel"): loc.get("name", "") for loc in locations}
+            distrito = by_level.get("district", "Lisboa")
+            concelho = by_level.get("council", "Lisboa")
+            freguesia = by_level.get("parish", "")
+            title = item.get("title", "")
+            typology_match = re.search(r"\bT[0-9]+\b", title, re.I)
+            results.append({
+                "source": "Imovirtual",
+                "title": title or "Imóvel em Lisboa",
+                "address": ", ".join(filter(None, (freguesia, concelho, distrito))),
+                "distrito": distrito,
+                "municipality": concelho,
+                "freguesia": freguesia,
+                "published_price_eur": (item.get("totalPrice") or {}).get("value"),
+                "published_at": item.get("dateCreated", ""),
+                "url": f"https://www.imovirtual.com/pt/anuncio/{slug}",
+                "image_url": ((item.get("images") or [{}])[0] or {}).get("medium", ""),
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": typology_match.group(0).upper() if typology_match else "",
+                "area_m2": item.get("areaInSquareMeters"),
+            })
+        pagination = search_ads.get("pagination", {})
+        if page >= pagination.get("totalPages", page):
+            break
+        page += 1
+    return list({item["url"]: item for item in results}.values())
 
 
 def crawl_century21(session):
@@ -212,29 +252,68 @@ def crawl_century21_api(session):
                 "typology": f"T{rooms}" if rooms is not None else "",
                 "area_m2": record.get("gross_area") or record.get("useful_area"),
             })
-        if page * 20 >= min(data.get("total", 0), 20 * 60):
+        if page * 20 >= data.get("total", 0):
             break
         page += 1
     return list({item["url"]: item for item in results if item["url"]}.values())
 
 
 def crawl_remax(session):
-    root = "https://www.remax.pt/_next/data/9NhcqVV_5tn3842MeY0T2/pt/comprar.json?locale=pt"
-    payload = session.get(root, timeout=30).json()
-    records = payload.get("pageProps", {}).get("properties", payload.get("properties", []))
+    api = "https://remax.pt/api/Listing/PaginatedMultiMatchSearchWithGeoHash"
+    # Region1ID 76 (distrito Lisboa) + Region2ID 537 scope this to concelho Lisboa only.
+    filters = [
+        {"field": "businessTypeID", "operationType": "int", "operator": "=", "value": "1", "label": "buy"},
+        {"field": "Region1ID", "operationType": "string", "operator": "=", "value": "76"},
+        {"field": "Region2ID", "operationType": "string", "operator": "=", "value": "537"},
+        {"field": "listingClassID", "operationType": "int", "operator": "=", "value": "1"},
+        {"field": "isSpecialExclusive", "operator": "=", "operationType": "string", "value": "false"},
+    ]
     results = []
-    for record in records or []:
-        address = record.get("address", "")
-        if isinstance(address, dict): address = ", ".join(str(x) for x in address.values())
-        if "lisboa" not in str(address).casefold(): continue
-        rooms = record.get("number_of_rooms")
-        results.append({"source":"RE/MAX Portugal","title":record.get("title", "Imóvel em Lisboa"),"address":str(address),"municipality":"Lisboa","published_price_eur":record.get("price"),"published_at":"","url":urljoin("https://www.remax.pt", record.get("link", "")),"image_url":(record.get("images") or [""])[0],"last_seen":datetime.now(timezone.utc).isoformat(),"typology":f"T{rooms}" if rooms is not None else ""})
-    return results
+    page = 1
+    page_size = 50
+    while True:
+        payload = {"filters": filters, "pageNumber": page, "pageSize": page_size, "sort": ["-PublishDate"], "searchValue": "Lisboa", "precision": 12}
+        response = session.post(api, json=payload, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        records = data.get("results", [])
+        if not records:
+            break
+        for record in records:
+            listing_id = record.get("listingTitle", "")
+            if not listing_id:
+                continue
+            rooms = record.get("numberOfBedrooms")
+            typology = f"T{rooms}" if rooms is not None else ""
+            picture = record.get("listingPictureUrl", "")
+            distrito = record.get("regionName1", "") or "Lisboa"
+            concelho = record.get("regionName2", "")
+            freguesia = record.get("regionName3", "")
+            results.append({
+                "source": "RE/MAX Portugal",
+                "title": f"{typology} em {freguesia or concelho or 'Lisboa'}".strip() if typology else "Imóvel em Lisboa",
+                "address": ", ".join(filter(None, (freguesia, concelho, distrito))),
+                "distrito": distrito,
+                "municipality": concelho or "Lisboa",
+                "freguesia": freguesia,
+                "published_price_eur": record.get("listingPrice"),
+                "published_at": record.get("publishDate", ""),
+                "url": f"https://remax.pt/pt/imoveis/x/{listing_id}",
+                "image_url": f"https://i.maxwork.pt/ds-l/{picture}" if picture else "",
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": typology,
+                "area_m2": record.get("totalArea") or record.get("livingArea") or record.get("builtArea"),
+            })
+        if page * page_size >= data.get("total", 0):
+            break
+        page += 1
+    return list({item["url"]: item for item in results}.values())
 
 
 def crawl_iad(session):
     api = "https://www.iadportugal.pt/api/properties"
-    base_params = [("serpSlug", "lisboa"), ("serpSlug", "venda"), ("serpSlug", "apartamento"), ("locale", "pt")]
+    # "lisboa-1106" is iad's concelho Lisboa slug, distinct from the "lisboa" distrito-wide slug.
+    base_params = [("serpSlug", "lisboa-1106"), ("serpSlug", "venda"), ("serpSlug", "apartamento"), ("locale", "pt")]
     results = []
     page = 1
     while True:
@@ -245,11 +324,12 @@ def crawl_iad(session):
         if not items:
             break
         for item in items:
-            place = (item.get("location") or {}).get("place", "")
-            if any(marker in place.casefold() for marker in OTHER_DISTRICT_CITY_MARKERS):
-                continue
-            concelho = place if place in LISBON_DISTRICT_CONCELHOS else ""
-            freguesia = "" if concelho else place
+            location = item.get("location") or {}
+            postcode = location.get("postcode", "")
+            if postcode and not postcode.startswith("1"):
+                continue  # drop the occasional mis-geocoded listing outside concelho Lisboa
+            place = location.get("place", "")
+            freguesia = "" if place.casefold() == "lisboa" else place
             rooms = next((r.get("value") for r in item.get("rooms", []) if r.get("type") == "bedrooms"), None)
             area = next((s.get("value") for s in item.get("surfaceList", []) if s.get("type") == "gross-area"), None)
             slug = (item.get("slugs") or {}).get("pt", "")
@@ -257,9 +337,9 @@ def crawl_iad(session):
             results.append({
                 "source": "iad Portugal",
                 "title": item.get("title", "Imóvel em Lisboa"),
-                "address": ", ".join(filter(None, (freguesia, concelho, "Lisboa"))),
+                "address": ", ".join(filter(None, (freguesia, "Lisboa"))),
                 "distrito": "Lisboa",
-                "municipality": concelho or "Lisboa",
+                "municipality": "Lisboa",
                 "freguesia": freguesia,
                 "published_price_eur": (item.get("price") or {}).get("main"),
                 "published_at": "",
@@ -278,29 +358,101 @@ def crawl_iad(session):
 
 
 def crawl_zome(session):
-    root = "https://www.zome.pt/pt"
-    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    # Zome's site is a client-rendered SPA backed by a public Supabase project; this is the
+    # same "publishable" (anon-level) key shipped to every browser, not a private credential.
+    api = "https://luvskhnljpxllkxpeasu.supabase.co/rest/v1/rpc/get_angariacoes"
+    headers = {
+        "apikey": "sb_publishable_fY6BgFcFONgcOhMf1Snqjw_qwwJY2zk",
+        "authorization": "Bearer sb_publishable_fY6BgFcFONgcOhMf1Snqjw_qwwJY2zk",
+        "content-profile": "pt_prod",
+        "content-type": "application/json",
+    }
+    base_payload = {
+        "localizationiso": "PT", "typebusiness": 1, "typelisting": None, "localizacao": None,
+        "typologylisting": None, "arraylocalization": [2021], "minprecoimovel": None, "maxprecoimovel": None,
+        "areaminlisting": None, "statuslisting": None, "attr_piscina": None, "attr_elevador": None,
+        "attr_garagem": None, "attr_parqueamento": None, "attr_mobilidadereduzida": None,
+        "valorentradafinanciamento": None, "prazoamortizacaofinanciamento": None, "taxafixafinanciamento": None,
+        "spread": None, "pricebymonth": None, "arrayzmid": None, "mylocalizacao": None, "mylocalizacaodistance": None,
+        "idconsultor": None, "moradahubconsultorid": None, "orderby": "dataentradarede", "orderdirection": "DESC",
+    }
     results = []
-    for link in soup.select('a[href*="ZMPT"]'):
-        href = link.get("href", "")
-        text = link.get_text(" ", strip=True)
-        if "lisboa" not in (text + href).casefold(): continue
-        match = re.search(r"\bT[0-9]+\b", text, re.I)
-        results.append({"source":"Zome","title":text[:200],"address":text,"municipality":"Lisboa","published_price_eur":None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat(),"typology":match.group(0).upper() if match else ""})
-    return list({x["url"]:x for x in results}.values())
+    offset = 0
+    limit = 50
+    while True:
+        response = session.post(api, json={**base_payload, "limiti": limit, "offseti": offset}, headers=headers, timeout=30)
+        response.raise_for_status()
+        records = response.json()
+        if not records:
+            break
+        for record in records:
+            pid = record.get("pid", "")
+            slug = json.loads(record.get("url_detail_view_link") or "{}").get("PT", "")
+            if not pid or not slug:
+                continue
+            price_digits = re.sub(r"[^\d]", "", record.get("precoimovel") or "")
+            prop_type = json.loads(record.get("tipoimovel") or "{}").get("PT", "")
+            typology = json.loads(record.get("tipologiaimovel") or "{}").get("PT", "")
+            results.append({
+                "source": "Zome",
+                "title": f"{prop_type} {typology}".strip() or "Imóvel em Lisboa",
+                "address": ", ".join(filter(None, (record.get("localizacaolevel3imovel", ""), record.get("localizacaolevel2imovel", ""), record.get("localizacaolevel1imovel", "")))),
+                "distrito": record.get("localizacaolevel1imovel", "") or "Lisboa",
+                "municipality": record.get("localizacaolevel2imovel", "") or "Lisboa",
+                "freguesia": record.get("localizacaolevel3imovel", ""),
+                "published_price_eur": float(price_digits) if price_digits else None,
+                "published_at": record.get("dataentradarede", ""),
+                "url": f"https://www.zome.pt/pt/{slug}",
+                "image_url": ((record.get("gallery") or {}).get("mres") or [""])[0],
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": typology,
+                "area_m2": record.get("areabrutaconst") or record.get("areautilhab"),
+            })
+        if len(records) < limit:
+            break
+        offset += limit
+    return list({item["url"]: item for item in results if item["url"]}.values())
 
 
 def crawl_pure_portugal(session):
-    root = "https://pureportugal.co.uk/"
-    soup = BeautifulSoup(session.get(root, timeout=30).text, "html.parser")
+    root = "https://pureportugal.co.uk/properties/"
+    # cat is type+type+type+district+type+type-; slot 4 (97) is the "Lisbon" district filter.
+    # Built as a raw query string because the literal "+" separators must not be percent-encoded.
+    url = root + "?cat=54+54+54+97+54+54-&landmin=0&landmax=0&order=ASC&v="
+    response = session.get(url, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
     results = []
-    for link in soup.select('a[href*="/property/"]'):
-        href = link.get("href", "")
-        text = link.get_text(" ", strip=True)
-        if "lisboa" not in (text + href).casefold(): continue
-        price = re.search(r"([\d.\s]+)\s*(?:€|EUR)", text)
-        results.append({"source":"Pure Portugal","title":text[:200],"address":"Lisboa","municipality":"Lisboa","published_price_eur":parse_price(price.group(1)) if price else None,"published_at":"","url":urljoin(root, href),"image_url":"","last_seen":datetime.now(timezone.utc).isoformat()})
-    return list({x["url"]:x for x in results}.values())
+    for card in soup.select("div.card"):
+        link = card.select_one('a[href*="/property/"]')
+        if not link:
+            continue
+        url = link.get("href", "").strip()
+        title_el = card.select_one("h1")
+        title = title_el.get_text(strip=True) if title_el else "Imóvel em Lisboa"
+        inline_blocks = card.select("div.inline")
+        price_digits = re.sub(r"[^\d]", "", inline_blocks[0].get_text()) if inline_blocks else ""
+        concelho, distrito = "", "Lisbon"
+        if len(inline_blocks) > 1:
+            bolds = inline_blocks[1].select("b")
+            if bolds:
+                concelho = bolds[0].get_text(strip=True)
+            if len(bolds) > 1:
+                distrito = bolds[1].get_text(strip=True)
+        results.append({
+            "source": "Pure Portugal",
+            "title": title,
+            "address": ", ".join(filter(None, (concelho, distrito))),
+            "distrito": "Lisboa",
+            "municipality": concelho or "Lisboa",
+            "freguesia": "",
+            "published_price_eur": float(price_digits) if price_digits else None,
+            "published_at": "",
+            "url": url,
+            "image_url": "",
+            "last_seen": datetime.now(timezone.utc).isoformat(),
+        })
+    return list({item["url"]: item for item in results if item["url"]}.values())
 
 
 def crawl_homelovers(session):
@@ -375,7 +527,7 @@ def crawl_era_portugal(session):
             "order": "3",
             "isResidential": True,
             "nonResidential": False,
-            "districts": ["11"],  # distrito Lisboa; no concelho restriction
+            "districts": ["11"],  # distrito Lisboa; concelho Lisboa is filtered client-side below
             "businessTypeId": [1],  # Comprar (sale) only
         }
         response = session.post("https://www.era.pt/API/ServicesModule/Property/Search", json=payload, headers=headers, timeout=30)
@@ -396,6 +548,8 @@ def crawl_era_portugal(session):
             title_text = record.get("Title", "")
             concelho_match = re.search(r"/\s*([^,]+),", title_text)
             concelho = concelho_match.group(1).strip() if concelho_match else ""
+            if concelho.casefold() != "lisboa":
+                continue
             rooms = record.get("Rooms")
             typology_match = re.search(r"\bT[0-9]+\b", title_text, re.I)
             typology = typology_match.group(0).upper() if typology_match else (f"T{rooms}" if isinstance(rooms, int) else "")
@@ -415,14 +569,49 @@ def crawl_era_portugal(session):
                 "typology": typology,
                 "area_m2": parse_area(area) if area else None,
             })
-        if page >= min(data.get("TotalPages", page), 150):
+        if page >= data.get("TotalPages", page):
             break
         page += 1
     return list({item["url"]: item for item in results if item["url"]}.values())
 
 
 def crawl_green_acres(session):
-    return crawl_reference_source(session, "Green Acres", "https://www.green-acres.pt/")
+    root = "https://www.green-acres.pt/property-for-sale/lisboa"
+    response = session.get(root, timeout=30)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    results = []
+    # This SEO landing page only surfaces a handful of "latest" picks for the wider Lisbon
+    # region (no full paginated search was found), so listing counts here stay small.
+    for card in soup.select("div.announce-card[data-o]"):
+        try:
+            url = base64.b64decode(card["data-o"]).decode()
+        except (ValueError, KeyError):
+            continue
+        text = card.get_text(" | ", strip=True)
+        price_el = card.select_one(".info-price")
+        price_digits = re.sub(r"[^\d]", "", price_el.get_text()) if price_el else ""
+        location = re.search(r"([^|]+?)\s*\(([^)]+)\)", text)
+        freguesia, concelho = (part.strip() for part in location.groups()) if location else ("", "")
+        area = re.search(r"([\d.,]+)\s*m²(?!\s*of land)", text)
+        rooms = re.search(r"(\d+)\s*bedrooms?", text, re.I)
+        title = f"{f'T{rooms.group(1)} ' if rooms else ''}em {freguesia or concelho or 'Lisboa'}".strip()
+        results.append({
+            "source": "Green Acres",
+            "title": title,
+            "address": ", ".join(filter(None, (freguesia, concelho, "Lisboa"))),
+            "distrito": "Lisboa",
+            "municipality": concelho or "Lisboa",
+            "freguesia": freguesia,
+            "published_price_eur": float(price_digits) if price_digits else None,
+            "published_at": "",
+            "url": url,
+            "image_url": "",
+            "last_seen": datetime.now(timezone.utc).isoformat(),
+            "typology": f"T{rooms.group(1)}" if rooms else "",
+            "area_m2": parse_area(area.group(1)) if area else None,
+        })
+    return list({item["url"]: item for item in results if item["url"]}.values())
 
 
 def crawl_idealista(session):
@@ -446,152 +635,56 @@ def crawl_supercasa(session):
 
 
 def crawl_imobancos(session):
-    root = "https://www.imobancos.pt/en/imoveis/Lisboa/page/1"
     results = []
     page = 1
-    
     while True:
-        try:
-            response = session.get(root, timeout=30)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            # Look for property listings and extract data
-            property_cards = soup.select('.property-card') or soup.select('[data-property]')
-
-            if not property_cards:
-                print(f"No property cards found on page {page}")
-                break
-
-            print(f"Found {len(property_cards)} property cards on page {page}")
-
-            for i, card in enumerate(property_cards):
-                try:
-                    # Extract all available information from the card
-                    title_elem = card.select_one('.property-title, h2')
-                    price_elem = card.select_one('.price, .property-price')
-                    address_elem = card.select_one('.address, .property-address') 
-                    area_elem = card.select_one('.area, .property-area')
-                    type_elem = card.select_one('.property-type, .type')
-                    description_elem = card.select_one('.property-description, p')
-                    features_elem = card.select('.property-feature, li')
-                    year_elem = card.select_one('.year, .construction-year')
-                    bedrooms_elem = card.select_one('.bedrooms, .bed')
-                    bathrooms_elem = card.select_one('.bathrooms, .bath')
-                    
-                    # Extract data with graceful fallbacks
-                    title = title_elem.get_text(strip=True) if title_elem else "Imóvel em Lisboa"
-                    price = price_elem.get_text(strip=True) if price_elem else ""
-                    address = address_elem.get_text(strip=True) if address_elem else ""
-                    area_str = area_elem.get_text(strip=True) if area_elem else ""
-                    prop_type = type_elem.get_text(strip=True) if type_elem else ""
-                    description = description_elem.get_text(strip=True) if description_elem else ""
-                    
-                    # Get all features available
-                    features = []
-                    for feature in features_elem:
-                        feature_text = feature.get_text(strip=True)
-                        if feature_text and feature_text not in ["", " "] and len(feature_text) > 1:
-                            features.append(feature_text)
-                    
-                    print(f"Processing card {i+1}: {title} - {prop_type}")
-                    
-                    # Only include apartments and houses (moradia)
-                    if 'apartamento' in prop_type.lower() or 'moradia' in prop_type.lower():
-                        # Get the actual URL for this property
-                        link_elem = card.select_one('a[href]')
-                        url = urljoin(root, link_elem.get('href', '')) if link_elem else ""
-                        
-                        # Extract area in square meters (if available)
-                        area_match = re.search(r'(\d+(?:\.\d+)?)\s*m²', area_str, re.IGNORECASE) 
-                        area_m2 = float(area_match.group(1)) if area_match else None
-                        
-                        # Extract year of construction if available
-                        year = ""
-                        if year_elem:
-                            year_text = year_elem.get_text(strip=True)
-                            year_match = re.search(r'(\d{4})', year_text)
-                            year = year_match.group(1) if year_match else ""
-                            
-                        # Extract bedrooms and bathrooms
-                        bedrooms = ""
-                        if bedrooms_elem:
-                            bedroom_text = bedrooms_elem.get_text(strip=True)
-                            bed_match = re.search(r'(\d+)\s*(?:quartos|beds?|room)', bedroom_text, re.IGNORECASE)
-                            bedrooms = bed_match.group(1) if bed_match else ""
-                            
-                        bathrooms = ""
-                        if bathrooms_elem:
-                            bath_text = bathrooms_elem.get_text(strip=True)
-                            bath_match = re.search(r'(\d+)\s*(?:casas|bath)', bath_text, re.IGNORECASE)
-                            bathrooms = bath_match.group(1) if bath_match else ""
-                        
-                        # Extract more detailed information
-                        municipality = ""
-                        freguesia = ""
-                        
-                        # Try to extract location details from address or other data
-                        if address:
-                            # Parse address to find municipal and parish information (simplified)
-                            address_parts = address.split(',')
-                            if len(address_parts) > 1:
-                                municipality = address_parts[-2].strip() if len(address_parts) >= 2 else ""
-                                freguesia = address_parts[-1].strip() if len(address_parts) >= 1 else ""
-                        
-                        result_entry = {
-                            "source": "Imobancos",
-                            "title": title,
-                            "address": address,
-                            "distrito": "Lisboa",
-                            "municipality": municipality,
-                            "freguesia": freguesia,
-                            "published_price_eur": float(price.replace('€', '').replace('.', '').replace(',', '')) if price else None,
-                            "tipologia": prop_type,
-                            "area_m2": area_m2,
-                            "description": description,
-                            "features": features,
-                            "year_construction": year,
-                            "bedrooms": bedrooms,
-                            "bathrooms": bathrooms,
-                            "url": url,
-                            "crawl_timestamp": datetime.now(timezone.utc).isoformat(),
-                            # Add more verbose information
-                            "listing_number": f"{page}-{i+1}",
-                            "full_scraped_data": {
-                                "title": title,
-                                "price": price,
-                                "address": address,
-                                "type": prop_type,
-                                "area": area_str,
-                                "description": description,
-                                "features": features,
-                                "year_construction": year,
-                                "bedrooms": bedrooms,
-                                "bathrooms": bathrooms
-                            }
-                        }
-                        
-                        results.append(result_entry)
-                        print(f"Added listing: {title[:50]}... - Price: {price}")
-                    else:
-                        print(f"Skipping non-target property type: {prop_type}")
-                        
-                except Exception as card_error:
-                    print(f"Error processing card {i+1}: {str(card_error)}")
-                    continue
-                    
-            page += 1
-            # For demonstration, only crawl one page (would be removed for production)
-            print(f"Completed crawling page {page-1} of Imobancos")
+        response = session.get(f"https://www.imobancos.pt/en/imoveis/Lisboa/page/{page}", timeout=30)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        cards = soup.select('a.group.block[id^="property-"]')
+        if not cards:
             break
-
-        except Exception as e:
-            print(f"Error crawling Imobancos page {page}: {str(e)}")
-            break
-
-    unique_results = list({item["url"]: item for item in results if item["url"]}.values())
-    print(f"Total listings collected: {len(unique_results)}")
-    return unique_results
+        for card in cards:
+            pin = card.select_one('span[class*="map-pin"]')
+            loc_span = pin.find_parent("div").select_one("span.truncate") if pin else None
+            location = loc_span.get_text(strip=True) if loc_span else ""
+            parts = [part.strip() for part in location.split(",")]
+            freguesia = parts[0] if len(parts) >= 3 else ""
+            concelho = parts[-2] if len(parts) >= 2 else ""
+            distrito = parts[-1] if parts else "Lisboa"
+            if concelho.casefold() != "lisboa":
+                continue
+            type_el = card.select_one("span.text-xs.font-medium")
+            prop_type = type_el.get_text(strip=True) if type_el else ""
+            if prop_type.casefold() not in ("apartamento", "moradia"):
+                continue
+            title_el = card.select_one("h3")
+            title = title_el.get_text(strip=True) if title_el else "Imóvel em Lisboa"
+            area_icon = card.select_one('span[class*="square-3-stack"]')
+            area_text = area_icon.find_parent("div").get_text(strip=True) if area_icon else ""
+            area_match = re.search(r"([\d.,]+)", area_text)
+            typology_icon = card.select_one('span[class*="home-20-solid"]')
+            typology = typology_icon.find_parent("div").get_text(strip=True) if typology_icon else ""
+            price_el = card.select_one("div.text-right span")
+            price_digits = re.sub(r"[^\d]", "", price_el.get_text()) if price_el else ""
+            image_el = card.select_one("img")
+            results.append({
+                "source": "Imobancos",
+                "title": title,
+                "address": ", ".join(filter(None, (freguesia, concelho, distrito))),
+                "distrito": distrito or "Lisboa",
+                "municipality": concelho,
+                "freguesia": freguesia,
+                "published_price_eur": float(price_digits) if price_digits else None,
+                "published_at": "",
+                "url": urljoin("https://www.imobancos.pt", card.get("href", "").split("#")[0]),
+                "image_url": image_el.get("src", "") if image_el else "",
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": typology,
+                "area_m2": parse_area(area_match.group(1)) if area_match else None,
+            })
+        page += 1
+    return list({item["url"]: item for item in results if item["url"]}.values())
 
 
 def main():
@@ -613,7 +706,7 @@ def main():
         ("Idealista", crawl_idealista, "https://www.idealista.pt/comprar-casas/lisboa/"),
         ("Properstar", crawl_properstar, "https://www.properstar.pt/"),
         ("Pure Portugal", crawl_pure_portugal, "https://www.pureportugal.co.uk/"),
-        ("RE/MAX Portugal", crawl_remax, "https://www.remax.pt/comprar"),
+        ("RE/MAX Portugal", crawl_remax, "https://remax.pt/pt/comprar/imoveis/habitacao/lisboa/r/r/t?s=%7B%22rg%22%3A%22Lisboa%22%2C%22cd%22%3A%2239.38219%3B-9.6255807%3B38.60869%3B-8.6568063%22%2C%22mio%22%3A%22true%22%7D&p=1&o=-PublishDate"),
         ("SAPO Imóveis", crawl_sapo, "https://casa.sapo.pt/comprar/"),
         ("SuperCasa", crawl_supercasa, "https://supercasa.pt/comprar-casas/lisboa"),
         ("Zome", crawl_zome, "https://www.zome.pt/pt"),
