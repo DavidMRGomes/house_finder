@@ -745,9 +745,17 @@ def main():
     with db.connect(args.db) as conn:
         for item in listings:
             existing = conn.execute("SELECT url FROM listings WHERE url = ?", (item.get("url", ""),)).fetchone()
+            # Re-posted ads get a new URL/ID; inherit first_seen from an earlier ad with the same source, title and address.
+            twin = None
+            if existing is None and item.get("title") and item.get("address"):
+                twin = conn.execute(
+                    "SELECT MIN(first_seen) AS first_seen FROM listings WHERE listing_type = 'market' AND source = ? AND title = ? AND address = ? AND first_seen IS NOT NULL",
+                    (item.get("source", ""), item["title"], item["address"]),
+                ).fetchone()
             db.upsert_listing(conn, item, listing_type="market")
-            conn.execute("UPDATE listings SET first_seen = COALESCE(first_seen, ?), is_active = 1, removed_at = NULL WHERE url = ?", (crawl_time, item.get("url", "")))
-            if existing is None:
+            first_seen = (twin["first_seen"] if twin and twin["first_seen"] else None) or crawl_time
+            conn.execute("UPDATE listings SET first_seen = COALESCE(first_seen, ?), is_active = 1, removed_at = NULL WHERE url = ?", (first_seen, item.get("url", "")))
+            if existing is None and first_seen == crawl_time:
                 db.record_listing_event(conn, item, "new", crawl_time)
         for status in statuses:
             db.upsert_source(conn, status["source"], status.get("url", ""), "market", "Ordinary-sale market listing source.", listing_type="market")
