@@ -6,6 +6,7 @@ import argparse
 import base64
 import json
 import re
+import unicodedata
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
@@ -354,6 +355,64 @@ def crawl_casayes(session):
             break
         page += 1
     return list({item["url"]: item for item in results}.values())
+
+
+def crawl_jll(session):
+    page_url = "https://residential.jll.pt/venda/venda/apartamento~moradia~moradia-geminada/lisboa?stt_not_in=7,106&srt=14&use_square_pag=1"
+    html = session.get(page_url, timeout=30)
+    html.raise_for_status()
+    # The Ego Real Estate API rejects calls without the per-page token and request id embedded in the HTML.
+    token = re.search(r'"APIToken":"([^"]+)"', html.text)
+    request_id = re.search(r"'requestID':'([^']+)'", html.text)
+    if not token or not request_id:
+        raise ValueError("JLL page has no API token")
+    headers = {"authorizationtoken": token.group(1), "Referer": page_url, "x-served-by": "JanelaDigital", "x-async": "true", "x-requestid": request_id.group(1), "userinfotoken": ""}
+    params = {"restparams": "venda/apartamento~moradia~moradia-geminada/lisboa", "nre": "12", "stt_not_in": "7,106", "srt": "14", "use_square_pag": "1", "gather_attributes": "1", "lng": "pt-pt"}
+    api = "https://websiteapi.egorealestate.com/v1/"
+    options = session.get(api + "SearchOptions", params={"restparams": params["restparams"], "stt_not_in": "7,106", "searchfields": "Parish", "withData": "true", "filterType": "PropertyListFilter", "allowedInfo": "{}", "lng": "pt-pt"}, headers=headers, timeout=30)
+    options.raise_for_status()
+    parishes = [item["ID"] for item in options.json().get("Parish") or [] if item.get("ID")]
+    results = []
+    # The API stops after 35 pages (420 results) per query, so crawl one parish at a time.
+    for parish in parishes:
+        page = 1
+        while page <= 35:
+            response = session.get(api + "Properties", params=dict(params, parish=parish, pag=page), headers=headers, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            records = data.get("Properties", [])
+            if not records:
+                break
+            results.extend(jll_listing(record) for record in records if record.get("ID"))
+            if page * 12 >= data.get("TotalRecords", 0):
+                break
+            page += 1
+    return list({item["url"]: item for item in results}.values())
+
+
+def jll_listing(record):
+    listing_id = record["ID"]
+    price = next((price.get("PriceValue") for business in record.get("PropertyBusiness", []) if business.get("BusinessID") == 1 for price in business.get("Prices", [])), None)
+    rooms = record.get("Rooms")
+    images = record.get("Images") or []
+    slug = re.sub(r"[^a-z0-9]+", "-", unicodedata.normalize("NFKD", record.get("Title", "")).encode("ascii", "ignore").decode().lower()).strip("-")
+    concelho = record.get("Municipality", "") or "Lisboa"
+    freguesia = record.get("Parish", "")
+    return {
+        "source": "JLL Residential",
+        "title": record.get("Title") or f"Imóvel em {freguesia or concelho}",
+        "address": ", ".join(filter(None, (freguesia, concelho, record.get("District", "") or "Lisboa"))),
+        "distrito": record.get("District", "") or "Lisboa",
+        "municipality": concelho,
+        "freguesia": freguesia,
+        "published_price_eur": price or None,
+        "published_at": "",
+        "url": f"https://residential.jll.pt/imovel/{slug or 'x'}/{listing_id}",
+        "image_url": (images[0].get("Thumbnail_640X480") or images[0].get("Thumbnail", "")) if images else record.get("Thumbnail", "") or "",
+        "last_seen": datetime.now(timezone.utc).isoformat(),
+        "typology": f"T{rooms}" if rooms is not None else "",
+        "area_m2": record.get("GrossArea") or record.get("NetArea") or None,
+    }
 
 
 def crawl_iad(session):
@@ -742,22 +801,23 @@ def main():
     crawl_time = datetime.now(timezone.utc).isoformat()
     crawlers = (
         ("CustoJusto Imobiliário", crawl_custojusto_adapter, "https://www.custojusto.pt/portugal/imobiliario"),
-        ("OLX Imóveis", crawl_olx_adapter, "https://www.olx.pt/imoveis/"),
+        ("OLX Imóveis", crawl_olx_adapter, "https://www.olx.pt/imoveis/"), # Not Working
         ("Imobancos", crawl_imobancos, "https://www.imobancos.pt/en/imoveis/Lisboa/page/1"),
         ("Imovirtual", crawl_imovirtual, "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa"),
-        ("Casayes", crawl_casayes, "https://casayes.pt/pt/comprar/casaseapartamentos/lisboa/lisboa"),
+        ("Casayes", crawl_casayes, "https://casayes.pt/pt/comprar/casaseapartamentos/lisboa/lisboa"), # Not Working
         ("Century 21 Portugal", crawl_century21_api, "https://www.century21.pt/comprar"),
         ("ERA Portugal", crawl_era_portugal, "https://www.era.pt/comprar"),
         ("Green Acres", crawl_green_acres, "https://www.green-acres.pt/"),
         ("HomeLovers", crawl_homelovers, "https://homelovers.com/buyproperties?FilterDistrictId=2&filtroHome=true"),
-        ("Idealista", crawl_idealista, "https://www.idealista.pt/comprar-casas/lisboa/"),
-        ("Properstar", crawl_properstar, "https://www.properstar.pt/"),
+        ("Idealista", crawl_idealista, "https://www.idealista.pt/comprar-casas/lisboa/"), # Not Working
+        ("Properstar", crawl_properstar, "https://www.properstar.pt/"), # Not Working
         ("Pure Portugal", crawl_pure_portugal, "https://www.pureportugal.co.uk/"),
         ("RE/MAX Portugal", crawl_remax, "https://remax.pt/pt/comprar/imoveis/habitacao/lisboa/r/r/t?s=%7B%22rg%22%3A%22Lisboa%22%2C%22cd%22%3A%2239.38219%3B-9.6255807%3B38.60869%3B-8.6568063%22%2C%22mio%22%3A%22true%22%7D&p=1&o=-PublishDate"),
-        ("SAPO Imóveis", crawl_sapo, "https://casa.sapo.pt/comprar/"),
-        ("SuperCasa", crawl_supercasa, "https://supercasa.pt/comprar-casas/lisboa"),
+        ("SAPO Imóveis", crawl_sapo, "https://casa.sapo.pt/comprar/"), # Not Working
+        ("SuperCasa", crawl_supercasa, "https://supercasa.pt/comprar-casas/lisboa"), # Not Working
         ("Zome", crawl_zome, "https://www.zome.pt/pt"),
         ("iad Portugal", crawl_iad, "https://www.iadportugal.pt/anuncios/lisboa/venda/apartamento"),
+        ("JLL Residential", crawl_jll, "https://residential.jll.pt/venda/venda/apartamento~moradia~moradia-geminada/lisboa"),
     )
     for name, crawler, root in crawlers:
         try:
