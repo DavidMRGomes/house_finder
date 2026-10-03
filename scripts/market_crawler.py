@@ -507,6 +507,56 @@ def crawl_engel_volkers(session):
     return list(results.values())
 
 
+def crawl_savills(session):
+    base = "https://search.savills.com/pt/pt/lista?SearchList=Id_844+Category_TownVillageCity&Tenure=GRS_T_B&SortOrder=SO_PCDD&Currency=EUR&PropertyTypes=GRS_PT_H,GRS_PT_APT,GRS_PT_ND,GRS_PT_PENT&Bedrooms=-1&Bathrooms=-1&CarSpaces=-1&Receptions=-1&ResidentialSizeUnit=SquareMeter&CommercialSizeUnit=SquareMeter&LandAreaUnit=Hectare&SaleableAreaUnit=SquareMeter&AvailableSizeUnit=SquareMeter&Category=GRS_CAT_RES&Shapes=W10"
+    results = {}
+    page = 1
+    while page <= 50:
+        response = session.get(f"{base}&CurrentPage={page}", timeout=30)
+        response.raise_for_status()
+        match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', response.text, re.S)
+        if not match:
+            raise ValueError("Savills page has no embedded listing data")
+        state = json.loads(match.group(1))["props"]["initialReduxState"]
+        list_page = state["listPage"]["pageMap"].get(str(page))
+        if not list_page:
+            break
+        for property_id in list_page["results"]["Properties"]:
+            record = state["properties"].get(property_id)
+            if not record:
+                continue
+            if re.match(r"Pr[eé]dio", record.get("AddressLine1") or "", re.I):
+                continue
+            parts = [part.strip() for part in (record.get("AddressLine2") or "").split(",") if part.strip()]
+            concelho = parts[-1] if parts else "Lisboa"
+            freguesia = parts[0] if len(parts) > 1 else ""
+            gallery = record.get("PropertyCardImagesGallery") or []
+            bedrooms = record.get("Bedrooms")
+            # New developments are priced on request and list a range of bedrooms.
+            is_development = record.get("IsParent") or record.get("IsNewDevelopment")
+            size = re.search(r"\d[\d.]*", record.get("SizeFormatted") or "")
+            area = float(size.group(0).replace(".", "")) if size else (record.get("Size") or {}).get("SqMt") or None
+            results[property_id] = {
+                "source": "Savills",
+                "title": record.get("AddressLine1") or f"Imóvel em {freguesia or concelho}",
+                "address": ", ".join(filter(None, (freguesia, concelho, "Lisboa"))),
+                "distrito": "Lisboa",
+                "municipality": concelho,
+                "freguesia": freguesia,
+                "published_price_eur": record.get("Price") if record.get("ShowPrice") and record.get("Price") else None,
+                "published_at": "",
+                "url": f"https://search.savills.com/pt/pt/imovel-pormenor/{record.get('ExternalPropertyIDFormatted') or property_id.lower()}",
+                "image_url": (gallery[0].get("ImageUrl_M") or gallery[0].get("ImageUrl_L") or "") if gallery else "",
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": f"T{bedrooms}" if bedrooms is not None and not is_development else "",
+                "area_m2": area,
+            }
+        if page >= list_page["paging"].get("total", 1):
+            break
+        page += 1
+    return list(results.values())
+
+
 def crawl_iad(session):
     api = "https://www.iadportugal.pt/api/properties"
     # "lisboa-1106" is iad's concelho Lisboa slug, distinct from the "lisboa" distrito-wide slug.
@@ -906,6 +956,7 @@ def main():
         ("Properstar", crawl_properstar, "https://www.properstar.pt/"), # Not Working
         ("Pure Portugal", crawl_pure_portugal, "https://www.pureportugal.co.uk/"),
         ("RE/MAX Portugal", crawl_remax, "https://remax.pt/pt/comprar/imoveis/habitacao/lisboa/r/r/t?s=%7B%22rg%22%3A%22Lisboa%22%2C%22cd%22%3A%2239.38219%3B-9.6255807%3B38.60869%3B-8.6568063%22%2C%22mio%22%3A%22true%22%7D&p=1&o=-PublishDate"),
+        ("Savills", crawl_savills, "https://search.savills.com/pt/pt/lista?SearchList=Id_844+Category_TownVillageCity&Tenure=GRS_T_B"),
         ("SAPO Imóveis", crawl_sapo, "https://casa.sapo.pt/comprar/"), # Not Working
         ("SuperCasa", crawl_supercasa, "https://supercasa.pt/comprar-casas/lisboa"), # Not Working
         ("Zome", crawl_zome, "https://www.zome.pt/pt"),
