@@ -310,6 +310,52 @@ def crawl_remax(session):
     return list({item["url"]: item for item in results}.values())
 
 
+def crawl_casayes(session):
+    api = "https://casayes.pt/api/frontend/frontendlisting/SearchWithPagination"
+    headers = {"tenantid": "7", "languageid": "9", "beedigital": "casayes", "device": "web"}
+    # region1Id 27 / region2Id 179 scope this to concelho Lisboa; page sizes above 20 return nothing.
+    filters = [
+        {"field": "businessTypeId", "operationType": "int", "operator": "=", "value": "1"},
+        {"field": "region1Id", "operationType": "int", "operator": "=", "value": "27"},
+        {"field": "region2Id", "operationType": "int", "operator": "=", "value": "179"},
+        {"field": "listingTypeId", "operationType": "multiple", "operator": "=", "value": "1,2,4,10"},
+    ]
+    results = []
+    page = 1
+    while page <= 600:
+        response = session.post(api, headers=headers, json={"filters": filters, "pageNumber": page, "pageSize": 20, "sort": ["-PublishingDateDay"]}, timeout=30)
+        response.raise_for_status()
+        info = response.json()
+        for record in info.get("items", []):
+            listing_id = record.get("publicId", "")
+            if not listing_id:
+                continue
+            rooms = record.get("numberOfBedrooms")
+            typology = f"T{rooms}" if rooms is not None else ""
+            concelho = record.get("regionName2", "") or "Lisboa"
+            freguesia = record.get("regionName3", "")
+            picture = record.get("defaultPictureUrl", "")
+            results.append({
+                "source": "Casayes",
+                "title": f"{typology} em {freguesia or concelho}".strip() if typology else f"Imóvel em {freguesia or concelho}",
+                "address": ", ".join(filter(None, (freguesia, concelho, "Lisboa"))),
+                "distrito": "Lisboa",
+                "municipality": concelho,
+                "freguesia": freguesia,
+                "published_price_eur": record.get("listingPrice"),
+                "published_at": record.get("publishingDate", ""),
+                "url": f"https://casayes.pt/pt/imovel/{record.get('seoUriDescription', 'x')}/{listing_id}",
+                "image_url": f"https://i.casayes.pt/l-search/{picture}" if picture else "",
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": typology,
+                "area_m2": record.get("totalArea") or None,
+            })
+        if not info.get("hasNextPage"):
+            break
+        page += 1
+    return list({item["url"]: item for item in results}.values())
+
+
 def crawl_iad(session):
     api = "https://www.iadportugal.pt/api/properties"
     # "lisboa-1106" is iad's concelho Lisboa slug, distinct from the "lisboa" distrito-wide slug.
@@ -699,6 +745,7 @@ def main():
         ("OLX Imóveis", crawl_olx_adapter, "https://www.olx.pt/imoveis/"),
         ("Imobancos", crawl_imobancos, "https://www.imobancos.pt/en/imoveis/Lisboa/page/1"),
         ("Imovirtual", crawl_imovirtual, "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa"),
+        ("Casayes", crawl_casayes, "https://casayes.pt/pt/comprar/casaseapartamentos/lisboa/lisboa"),
         ("Century 21 Portugal", crawl_century21_api, "https://www.century21.pt/comprar"),
         ("ERA Portugal", crawl_era_portugal, "https://www.era.pt/comprar"),
         ("Green Acres", crawl_green_acres, "https://www.green-acres.pt/"),
