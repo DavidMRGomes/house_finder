@@ -453,6 +453,60 @@ def crawl_kw(session):
     return list({item["url"]: item for item in results}.values())
 
 
+def crawl_engel_volkers(session):
+    search_url = "https://www.engelvoelkers.com/pt/pt/propertysearch"
+    base = [("businessArea[]", "residential"), ("currency", "EUR"), ("measurementSystem", "metric"), ("placeIds[]", "ChIJO_PkYRozGQ0R0DaQ5L3rAAQ"), ("placeName", "Lisboa"), ("propertyMarketingType[]", "sale"), ("propertyTypeSubType.apartment[]", ""), ("propertyTypeSubType.house[]", ""), ("searchMode", "classic"), ("searchRadius", "0"), ("sortingOptionId", "PRICE_ASC")]
+    # The apartment/house filter still returns shops, parking and business transfers.
+    not_home = re.compile(r"estacionamento|garagem|parqueamento|trespasse|\bloja\b|espaço comercial|restaurante|armazém|escritório|terreno|\blote\b", re.I)
+    is_home = re.compile(r"\bT\d\b|apartamento|moradia|vivenda|villa", re.I)
+    results, seen = {}, set()
+    page = 1
+    while page <= 100:
+        response = session.get(search_url, params=base + [("page", page)], timeout=30)
+        response.raise_for_status()
+        match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', response.text, re.S)
+        if not match:
+            raise ValueError("Engel & Völkers page has no embedded listing data")
+        data = next((q["state"]["data"] for q in json.loads(match.group(1))["props"]["pageProps"]["dehydratedState"]["queries"] if isinstance(q["state"].get("data"), dict) and "listings" in q["state"]["data"]), None)
+        if data is None:
+            raise ValueError("Engel & Völkers page has no listings query")
+        records = [item["listing"] for item in data["listings"]]
+        # Pages past the end repeat the last page.
+        if not records or all(record["id"] in seen for record in records):
+            break
+        seen.update(record["id"] for record in records)
+        for record in records:
+            title = record.get("profile", {}).get("title", "")
+            rooms = (record.get("rooms") or {}).get("min")
+            price = ((record.get("price") or {}).get("salesPrice") or {}).get("min")
+            if rooms is None or (not_home.search(title) and not is_home.search(title)):
+                continue
+            neighborhood = next((c["text"] for c in record.get("addressComponents", []) if c.get("placeType") == "neighborhood"), "") or record.get("neighborhoodOverwrite") or ""
+            area = record.get("area") or {}
+            images = record.get("uploadCareImageIds") or []
+            # Total rooms include the living room, so bedrooms (tipologia) are one fewer.
+            typology = f"T{max(rooms - 1, 0)}"
+            results[record["id"]] = {
+                "source": "Engel & Völkers",
+                "title": title or f"{typology} em {neighborhood or 'Lisboa'}",
+                "address": ", ".join(filter(None, (neighborhood, "Lisboa", "Lisboa"))),
+                "distrito": "Lisboa",
+                "municipality": "Lisboa",
+                "freguesia": neighborhood,
+                "published_price_eur": price or None,
+                "published_at": "",
+                "url": f"https://www.engelvoelkers.com/pt/pt/exposes/{record['id']}",
+                "image_url": f"https://uploadcare.engelvoelkers.com/{images[0]}/-/format/webp/-/resize/640x/" if images else "",
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": typology,
+                "area_m2": (area.get("totalSurface") or {}).get("min") or (area.get("livingSurface") or {}).get("min") or None,
+            }
+        if len(seen) >= data.get("listingsTotal", 0):
+            break
+        page += 1
+    return list(results.values())
+
+
 def crawl_iad(session):
     api = "https://www.iadportugal.pt/api/properties"
     # "lisboa-1106" is iad's concelho Lisboa slug, distinct from the "lisboa" distrito-wide slug.
@@ -844,6 +898,7 @@ def main():
         ("Imovirtual", crawl_imovirtual, "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa"),
         ("Casayes", crawl_casayes, "https://casayes.pt/pt/comprar/casaseapartamentos/lisboa/lisboa"), # Not Working
         ("Century 21 Portugal", crawl_century21_api, "https://www.century21.pt/comprar"),
+        ("Engel & Völkers", crawl_engel_volkers, "https://www.engelvoelkers.com/pt/pt/propertysearch?businessArea[]=residential&placeName=Lisboa&propertyMarketingType[]=sale"),
         ("ERA Portugal", crawl_era_portugal, "https://www.era.pt/comprar"),
         ("Green Acres", crawl_green_acres, "https://www.green-acres.pt/"),
         ("HomeLovers", crawl_homelovers, "https://homelovers.com/buyproperties?FilterDistrictId=2&filtroHome=true"),
