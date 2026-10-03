@@ -6,6 +6,7 @@ import argparse
 import base64
 import json
 import re
+import time
 import unicodedata
 from datetime import datetime, timezone
 from urllib.parse import urljoin
@@ -873,8 +874,58 @@ def crawl_properstar(session):
     return crawl_reference_source(session, "Properstar", "https://www.properstar.pt/")
 
 
+def parse_sapo_cards(html):
+    soup = BeautifulSoup(html, "html.parser")
+    listings = []
+    for link in soup.select("a.property-info"):
+        # Result links go through a click tracker; the real listing URL is its l= parameter.
+        target = re.search(r"[?&]l=([^&]+)", link.get("href", "").replace("&amp;", "&"))
+        if not target:
+            continue
+        url = target.group(1).split("?")[0].split("#")[0]
+        card = link.find_parent(lambda tag: tag.select_one(".property-photos") is not None)
+        image = card.select_one(".property-photos img[data-src], .property-photos img[src^=http]") if card else None
+        title = link.get("title", "").removeprefix("Ver ") or link.select_one(".property-type").get_text(strip=True)
+        parts = [part.strip() for part in link.select_one(".property-location").get_text().split(",") if part.strip()]
+        distrito = parts.pop().removeprefix("Distrito de ") if parts and parts[-1].startswith("Distrito de") else "Lisboa"
+        concelho = parts[-1] if parts else "Lisboa"
+        freguesia = parts[-2] if len(parts) > 1 else ""
+        price = re.search(r"\d[\d.]*", link.select_one(".property-price-value").get_text() if link.select_one(".property-price-value") else "")
+        area = re.search(r"([\d.,]+)\s*m", link.select_one(".property-features-text").get_text() if link.select_one(".property-features-text") else "")
+        typology = re.search(r"\bT\d+\b", link.select_one(".property-type").get_text())
+        listings.append({
+            "source": "SAPO Imóveis",
+            "title": title,
+            "address": ", ".join(filter(None, (freguesia, concelho, distrito))),
+            "distrito": distrito,
+            "municipality": concelho,
+            "freguesia": freguesia,
+            "published_price_eur": float(price.group(0).replace(".", "")) if price else None,
+            "published_at": "",
+            "url": url,
+            "image_url": (image.get("data-src") or image.get("src") or "") if image else "",
+            "last_seen": datetime.now(timezone.utc).isoformat(),
+            "typology": typology.group(0) if typology else "",
+            "area_m2": parse_area(area.group(1)) if area else None,
+        })
+    return listings
+
+
 def crawl_sapo(session):
-    return crawl_reference_source(session, "SAPO Imóveis", "https://casa.sapo.pt/comprar/")
+    root = "https://casa.sapo.pt/comprar-apartamentos/lisboa/"
+    results = {}
+    page = 1
+    while page <= 250:
+        # CASA SAPO answers 429 to bursts, so crawl slowly and fail the source rather than return a partial result.
+        response = session.get(root, params={"pn": page} if page > 1 else None, timeout=30)
+        response.raise_for_status()
+        found = parse_sapo_cards(response.text)
+        if not found or all(item["url"] in results for item in found):
+            break
+        results.update({item["url"]: item for item in found})
+        page += 1
+        time.sleep(4)
+    return list(results.values())
 
 
 def crawl_supercasa(session):
