@@ -415,6 +415,44 @@ def jll_listing(record):
     }
 
 
+def crawl_kw(session):
+    api = "https://www.kwportugal.pt/api/portal/listProperties"
+    body = {"pageNumber": 1, "idCurrency": 1, "idCulture": 1, "numRecords": 500, "filterType": 1, "idRegions1": "11", "idRegions2": "1106", "orderField": 11, "idBusinesses": "1,4,5", "filterDate": "null", "idEnergyClasses": []}
+    slug = lambda text: re.sub(r"[^A-Za-z0-9]+", "-", unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()).strip("-")
+    results = []
+    page = 1
+    while page <= 20:
+        response = session.post(api, json=dict(body, pageNumber=page), timeout=60)
+        response.raise_for_status()
+        records = response.json()
+        for record in records:
+            # The unfiltered search also returns shops, garages, land and whole buildings.
+            if record.get("idBusiness") != 1 or record.get("type") not in ("Apartamento", "Moradia"):
+                continue
+            concelho = record.get("region2", "") or "Lisboa"
+            freguesia = record.get("region3", "")
+            typology = record.get("typology") or ""
+            results.append({
+                "source": "Keller Williams Portugal",
+                "title": record.get("designation") or f"{record['type']} em {freguesia or concelho}",
+                "address": ", ".join(filter(None, (freguesia, concelho, record.get("region1", "") or "Lisboa"))),
+                "distrito": record.get("region1", "") or "Lisboa",
+                "municipality": concelho,
+                "freguesia": freguesia,
+                "published_price_eur": record.get("price") or None,
+                "published_at": "",
+                "url": f"https://www.kwportugal.pt/pt/Imovel/Venda/{slug(record['type'])}/{slug(record.get('region1'))}/{slug(concelho)}/{slug(freguesia)}/{record['idProperty']}",
+                "image_url": record.get("defaultImageUrl") or "",
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "typology": typology,
+                "area_m2": record.get("totalArea") or record.get("livingArea") or None,
+            })
+        if len(records) < body["numRecords"]:
+            break
+        page += 1
+    return list({item["url"]: item for item in results}.values())
+
+
 def crawl_iad(session):
     api = "https://www.iadportugal.pt/api/properties"
     # "lisboa-1106" is iad's concelho Lisboa slug, distinct from the "lisboa" distrito-wide slug.
@@ -818,6 +856,7 @@ def main():
         ("Zome", crawl_zome, "https://www.zome.pt/pt"),
         ("iad Portugal", crawl_iad, "https://www.iadportugal.pt/anuncios/lisboa/venda/apartamento"),
         ("JLL Residential", crawl_jll, "https://residential.jll.pt/venda/venda/apartamento~moradia~moradia-geminada/lisboa"),
+        ("Keller Williams Portugal", crawl_kw, "https://www.kwportugal.pt/pt/imoveis?business=1&district=11&council=1106"),
     )
     for name, crawler, root in crawlers:
         try:
