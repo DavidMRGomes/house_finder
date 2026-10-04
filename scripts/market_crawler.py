@@ -566,6 +566,67 @@ def crawl_savills(session):
     return list(results.values())
 
 
+def crawl_porta_da_frente(session):
+    search_url = "https://www.portadafrente.com/en/properties"
+    params = {"county": "Lisboa", "category": "Apartment;House;Development", "sort": "properties/sort/price:asc"}
+    hits = {}
+    page = 1
+    while page <= 30:
+        response = session.get(search_url, params=dict(params, page=page), timeout=90)
+        response.raise_for_status()
+        # The page embeds the search results (one hit per development/type/rooms group) as JSON.
+        marker = response.text.find('"results":[{"hits":[')
+        if marker < 0:
+            raise ValueError("Porta da Frente page has no embedded search results")
+        results, _ = json.JSONDecoder().raw_decode(response.text[response.text.find("[", marker + len('"results":')):])
+        page_hits = results[0]["hits"]
+        if not page_hits:
+            break
+        for hit in page_hits:
+            hits.setdefault(hit["code"], hit)
+        page += 1
+        time.sleep(1.5)
+    chosen = []
+    cheapest = {}
+    parents = {}
+    for hit in hits.values():
+        if hit.get("category_name_en") == "Development":
+            parents[hit.get("development_id") or hit["ref"]] = hit
+        elif hit.get("development_id") or hit.get("parent_property_name"):
+            key = hit.get("development_id") or hit["parent_property_name"]
+            best = cheapest.get(key)
+            if (hit.get("price") or 0) > 0 and (best is None or hit["price"] < best["price"]):
+                cheapest[key] = hit
+        else:
+            chosen.append(hit)
+    # Only the cheapest priced unit stands for each development; developments without priced units keep their own entry.
+    for key, parent in parents.items():
+        chosen.append(cheapest.pop(key, parent))
+    chosen.extend(cheapest.values())
+    results = []
+    for hit in chosen:
+        rooms = hit.get("rooms")
+        is_development = hit.get("category_name_en") == "Development"
+        published = hit.get("published_at")
+        parish = hit.get("parish") or ""
+        results.append({
+            "source": "Porta da Frente",
+            "title": hit.get("title_en") or hit.get("development_name") or "Imóvel em Lisboa",
+            "address": ", ".join(filter(None, (parish, hit.get("county") or "Lisboa", "Lisboa"))),
+            "distrito": "Lisboa",
+            "municipality": hit.get("county") or "Lisboa",
+            "freguesia": parish,
+            "published_price_eur": hit.get("price") or None,
+            "published_at": datetime.fromtimestamp(published, timezone.utc).isoformat() if published else "",
+            "url": f"https://www.portadafrente.com/en/properties/{hit['slug_url_en']}",
+            "image_url": hit.get("cover_photo") or hit.get("splash_url") or "",
+            "last_seen": datetime.now(timezone.utc).isoformat(),
+            "typology": f"T{rooms}" if rooms is not None and not is_development else "",
+            "area_m2": hit.get("gross_private_area") or None,
+        })
+    return list({item["url"]: item for item in results}.values())
+
+
 def crawl_iad(session):
     api = "https://www.iadportugal.pt/api/properties"
     # "lisboa-1106" is iad's concelho Lisboa slug, distinct from the "lisboa" distrito-wide slug.
@@ -1007,13 +1068,14 @@ def main():
         ("OLX Imóveis", crawl_olx_adapter, "https://www.olx.pt/imoveis/"), # Not Working
         ("Imobancos", crawl_imobancos, "https://www.imobancos.pt/en/imoveis/Lisboa/page/1"),
         ("Imovirtual", crawl_imovirtual, "https://www.imovirtual.com/pt/resultados/comprar/casa/lisboa"),
-        ("Casayes", crawl_casayes, "https://casayes.pt/pt/comprar/casaseapartamentos/lisboa/lisboa"), # Not Working
+        ("Casayes", crawl_casayes, "https://casayes.pt/pt/comprar/casaseapartamentos/lisboa/lisboa"),
         ("Century 21 Portugal", crawl_century21_api, "https://www.century21.pt/comprar"),
         ("Engel & Völkers", crawl_engel_volkers, "https://www.engelvoelkers.com/pt/pt/propertysearch?businessArea[]=residential&placeName=Lisboa&propertyMarketingType[]=sale"),
         ("ERA Portugal", crawl_era_portugal, "https://www.era.pt/comprar"),
         ("Green Acres", crawl_green_acres, "https://www.green-acres.pt/"),
         ("HomeLovers", crawl_homelovers, "https://homelovers.com/buyproperties?FilterDistrictId=2&filtroHome=true"),
         ("Idealista", crawl_idealista, "https://www.idealista.pt/comprar-casas/lisboa/"), # Not Working
+        ("Porta da Frente", crawl_porta_da_frente, "https://www.portadafrente.com/en/properties?county=Lisboa"),
         ("Properstar", crawl_properstar, "https://www.properstar.pt/"), # Not Working
         ("Pure Portugal", crawl_pure_portugal, "https://www.pureportugal.co.uk/"),
         ("RE/MAX Portugal", crawl_remax, "https://remax.pt/pt/comprar/imoveis/habitacao/lisboa/r/r/t?s=%7B%22rg%22%3A%22Lisboa%22%2C%22cd%22%3A%2239.38219%3B-9.6255807%3B38.60869%3B-8.6568063%22%2C%22mio%22%3A%22true%22%7D&p=1&o=-PublishDate"),
