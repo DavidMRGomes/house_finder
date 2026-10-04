@@ -19,6 +19,14 @@ import db
 HEADERS = {"User-Agent": "house-finder-market/0.1 (+public property research)"}
 
 
+class PartialCrawl(Exception):
+    """A source stopped early; keep what it found but do not treat unseen listings as removed."""
+
+    def __init__(self, listings, message):
+        super().__init__(message)
+        self.listings = listings
+
+
 def parse_area(value):
     match = re.search(r"([\d][\d.,]*)", value or "")
     if not match:
@@ -916,8 +924,10 @@ def crawl_sapo(session):
     results = {}
     page = 1
     while page <= 250:
-        # CASA SAPO answers 429 to bursts, so crawl slowly and fail the source rather than return a partial result.
         response = session.get(root, params={"pn": page} if page > 1 else None, timeout=30)
+        # CASA SAPO blocks the client after one or two requests and the block outlasts any retry, so keep what was collected.
+        if response.status_code == 429 and results:
+            raise PartialCrawl(list(results.values()), f"rate limited by CASA SAPO after {page - 1} page(s); listings not on those pages were left untouched")
         response.raise_for_status()
         found = parse_sapo_cards(response.text)
         if not found or all(item["url"] in results for item in found):
@@ -1019,6 +1029,10 @@ def main():
         try:
             found = crawler(session); listings.extend(found); statuses.append({"source": name, "url": root, "listings": len(found), "error": ""})
             print(f"Crawled {name} got {len(found)} listings")
+        except PartialCrawl as partial:
+            listings.extend(partial.listings)
+            statuses.append({"source": name, "url": root, "listings": len(partial.listings), "error": str(partial)})
+            print(f"Partially crawled {name}: {len(partial.listings)} listings ({partial})")
         except requests.RequestException as error:
             statuses.append({"source": name, "url": root, "listings": 0, "error": str(error)})
             print(f"Error crawling {name}: {str(error)}")
