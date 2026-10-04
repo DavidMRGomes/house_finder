@@ -607,7 +607,6 @@ def crawl_porta_da_frente(session):
     for hit in chosen:
         rooms = hit.get("rooms")
         is_development = hit.get("category_name_en") == "Development"
-        published = hit.get("published_at")
         parish = hit.get("parish") or ""
         results.append({
             "source": "Porta da Frente",
@@ -617,7 +616,7 @@ def crawl_porta_da_frente(session):
             "municipality": hit.get("county") or "Lisboa",
             "freguesia": parish,
             "published_price_eur": hit.get("price") or None,
-            "published_at": datetime.fromtimestamp(published, timezone.utc).isoformat() if published else "",
+            "published_at": "",
             "url": f"https://www.portadafrente.com/en/properties/{hit['slug_url_en']}",
             "image_url": hit.get("cover_photo") or hit.get("splash_url") or "",
             "last_seen": datetime.now(timezone.utc).isoformat(),
