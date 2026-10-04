@@ -1059,6 +1059,7 @@ def crawl_imobancos(session):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default=str(db.DEFAULT_DB_PATH), help="path to the SQLite database")
+    parser.add_argument("--source", action="append", metavar="NAME", help="crawl only sources whose name contains NAME (case-insensitive); repeat for several")
     args = parser.parse_args()
     session = requests.Session(); session.headers.update(HEADERS)
     listings, statuses = [], []
@@ -1087,6 +1088,10 @@ def main():
         ("JLL Residential", crawl_jll, "https://residential.jll.pt/venda/venda/apartamento~moradia~moradia-geminada/lisboa"),
         ("Keller Williams Portugal", crawl_kw, "https://www.kwportugal.pt/pt/imoveis?business=1&district=11&council=1106"),
     )
+    if args.source:
+        crawlers = tuple(item for item in crawlers if any(query.casefold() in item[0].casefold() for query in args.source))
+        if not crawlers:
+            parser.error(f"no source matches {args.source}")
     for name, crawler, root in crawlers:
         try:
             found = crawler(session); listings.extend(found); statuses.append({"source": name, "url": root, "listings": len(found), "error": ""})
@@ -1111,7 +1116,7 @@ def main():
             conn.execute("DELETE FROM source_status WHERE listing_type = 'market' AND source = ?", (stale_name,))
             conn.execute("DELETE FROM sources WHERE listing_type = 'market' AND name = ?", (stale_name,))
     for source in configured:
-        if source["name"] in stale_names:
+        if args.source or source["name"] in stale_names:
             continue
         if source["name"] in known_statuses:
             continue
