@@ -1,4 +1,4 @@
-name: Nightly market crawl
+name: Nightly crawl
 
 on:
   schedule:
@@ -21,6 +21,15 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      # --tax needs an interactive Portal das Financas login, so it stays a manual step.
+      - name: Crawl public auction listings
+        continue-on-error: true
+        timeout-minutes: 30
+        run: python3 scripts/auction_finder.py --crawl --db house_finder.db
 
       - name: Crawl market listings
         run: python3 scripts/market_crawler.py --db house_finder.db
